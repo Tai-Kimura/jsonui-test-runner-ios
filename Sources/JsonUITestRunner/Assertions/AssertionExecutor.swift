@@ -84,6 +84,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             action: flowStep.action,
             assert: flowStep.assert,
             id: flowStep.id,
+            ids: flowStep.ids,
             value: flowStep.value,
             direction: flowStep.direction,
             duration: flowStep.duration,

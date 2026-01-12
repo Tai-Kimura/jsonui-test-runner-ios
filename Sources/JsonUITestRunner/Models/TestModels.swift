@@ -69,6 +69,7 @@ public struct FlowTestStep: Codable {
     public let action: String?
     public let assert: String?
     public let id: String?
+    public let ids: [String]?
     public let value: String?
     public let direction: String?
     public let duration: Int?
@@ -93,6 +94,7 @@ public struct TestStep: Codable {
     public let action: String?
     public let assert: String?
     public let id: String?
+    public let ids: [String]?
     public let value: String?
     public let direction: String?
     public let duration: Int?
