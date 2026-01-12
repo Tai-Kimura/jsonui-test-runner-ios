@@ -10,7 +10,7 @@ XCUITestベースのJsonUI用テストランナー。
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Tai-Kimura/jsonui-test-runner", from: "1.0.0")
+    .package(url: "https://github.com/Tai-Kimura/jsonui-test-runner-ios", from: "1.0.0")
 ],
 targets: [
     .testTarget(
@@ -22,7 +22,7 @@ targets: [
 
 または、Xcodeで:
 1. File > Add Package Dependencies
-2. URLを入力: `https://github.com/Tai-Kimura/jsonui-test-runner`
+2. URLを入力: `https://github.com/Tai-Kimura/jsonui-test-runner-ios`
 3. UITestターゲットに追加
 
 ## 使い方
