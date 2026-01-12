@@ -207,7 +207,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
-        let element = app.descendants(matching: .any)[id]
+        let element = findElementQuery(id: id, in: app)
 
         let exists = element.waitForExistence(timeout: timeout)
         if !exists {
@@ -255,8 +255,15 @@ public class XCUITestActionExecutor: ActionExecutor {
 
     // MARK: - Helper Methods
 
+    /// Fast element query using accessibilityIdentifier matching
+    private func findElementQuery(id: String, in app: XCUIApplication) -> XCUIElement {
+        // Use firstMatch for faster lookup - it returns immediately when found
+        // instead of scanning the entire hierarchy
+        return app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+
     private func findElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
-        let element = app.descendants(matching: .any)[id]
+        let element = findElementQuery(id: id, in: app)
 
         // Wait briefly for element to appear
         if !element.waitForExistence(timeout: defaultTimeout) {
