@@ -86,6 +86,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             assert: flowStep.assert,
             id: flowStep.id,
             ids: flowStep.ids,
+            text: flowStep.text,
             value: flowStep.value,
             direction: flowStep.direction,
             duration: flowStep.duration,
@@ -109,7 +110,13 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         let element = try findElement(id: id, in: app)
-        element.tap()
+
+        // If text is specified, tap on the specific text portion within the element
+        if let targetText = step.text {
+            try tapTextPortion(element: element, targetText: targetText, fullText: element.label)
+        } else {
+            element.tap()
+        }
     }
 
     private func executeDoubleTap(step: TestStep, in app: XCUIApplication) throws {
@@ -299,5 +306,38 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         return element
+    }
+
+    /// Tap on a specific text portion within an element
+    /// Calculates the approximate position of the target text and taps there
+    private func tapTextPortion(element: XCUIElement, targetText: String, fullText: String) throws {
+        guard let range = fullText.range(of: targetText) else {
+            throw ActionError.actionFailed(action: "tap", reason: "Text '\(targetText)' not found in element label '\(fullText)'")
+        }
+
+        let frame = element.frame
+
+        // Calculate the relative position of the target text within the full text
+        let startIndex = fullText.distance(from: fullText.startIndex, to: range.lowerBound)
+        let endIndex = fullText.distance(from: fullText.startIndex, to: range.upperBound)
+        let totalLength = fullText.count
+
+        guard totalLength > 0 else {
+            element.tap()
+            return
+        }
+
+        // Calculate the center position of the target text (as a ratio of the element width)
+        let startRatio = CGFloat(startIndex) / CGFloat(totalLength)
+        let endRatio = CGFloat(endIndex) / CGFloat(totalLength)
+        let centerRatio = (startRatio + endRatio) / 2.0
+
+        // Calculate the tap coordinate
+        let tapX = frame.minX + (frame.width * centerRatio)
+        let tapY = frame.midY
+
+        // Create coordinate and tap
+        let coordinate = element.coordinate(withNormalizedOffset: CGVector(dx: centerRatio, dy: 0.5))
+        coordinate.tap()
     }
 }
