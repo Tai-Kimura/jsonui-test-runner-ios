@@ -70,6 +70,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeBack(in: app)
         case "screenshot":
             try executeScreenshot(step: step, in: app)
+        case "alertTap":
+            try executeAlertTap(step: step, in: app)
         default:
             throw ActionError.unknownAction(action: action)
         }
@@ -96,7 +98,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             equals: flowStep.equals,
             contains: flowStep.contains,
             path: flowStep.path,
-            amount: flowStep.amount
+            amount: flowStep.amount,
+            button: flowStep.button
         )
 
         try execute(step: step, in: app)
@@ -286,6 +289,39 @@ public class XCUITestActionExecutor: ActionExecutor {
         XCTContext.runActivity(named: "Screenshot: \(name)") { activity in
             activity.add(attachment)
         }
+    }
+
+    private func executeAlertTap(step: TestStep, in app: XCUIApplication) throws {
+        guard let buttonText = step.button else {
+            throw ActionError.missingParameter(action: "alertTap", parameter: "button")
+        }
+
+        let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
+
+        // Wait for alert to appear
+        let alert = app.alerts.firstMatch
+        if !alert.waitForExistence(timeout: timeout) {
+            throw ActionError.actionFailed(action: "alertTap", reason: "No alert appeared within \(Int(timeout * 1000))ms")
+        }
+
+        // Find and tap the button with matching text
+        let button = alert.buttons[buttonText]
+        if button.exists {
+            button.tap()
+            return
+        }
+
+        // Try scrollViews for action sheets
+        let actionSheet = app.sheets.firstMatch
+        if actionSheet.exists {
+            let sheetButton = actionSheet.buttons[buttonText]
+            if sheetButton.exists {
+                sheetButton.tap()
+                return
+            }
+        }
+
+        throw ActionError.actionFailed(action: "alertTap", reason: "Button '\(buttonText)' not found in alert")
     }
 
     // MARK: - Helper Methods

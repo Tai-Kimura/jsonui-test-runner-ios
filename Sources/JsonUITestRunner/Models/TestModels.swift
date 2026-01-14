@@ -81,6 +81,7 @@ public struct FlowTestStep: Codable {
     public let contains: String?
     public let path: String?
     public let amount: Int?
+    public let button: String?
 }
 
 public struct Checkpoint: Codable {
@@ -107,6 +108,7 @@ public struct TestStep: Codable {
     public let contains: String?
     public let path: String?
     public let amount: Int?
+    public let button: String?
 
     public var isAction: Bool {
         action != nil
