@@ -57,7 +57,7 @@ final class JsonUITestRunnerTests: XCTestCase {
         let flowTest = try decoder.decode(FlowTest.self, from: json)
 
         XCTAssertEqual(flowTest.type, "flow")
-        XCTAssertEqual(flowTest.sources.count, 2)
+        XCTAssertEqual(flowTest.sources?.count, 2)
         XCTAssertEqual(flowTest.metadata.name, "Login Flow Test")
         XCTAssertEqual(flowTest.steps.count, 2)
         XCTAssertEqual(flowTest.steps[0].screen, "Login")
@@ -139,5 +139,60 @@ final class JsonUITestRunnerTests: XCTestCase {
         XCTAssertEqual(dict["int"]?.intValue, 42)
         XCTAssertEqual(dict["bool"]?.boolValue, true)
         XCTAssertEqual(dict["double"]?.doubleValue, 3.14)
+    }
+
+    func testArgsSubstitutionInSteps() throws {
+        // Covers the String / String? substitution overloads that became
+        // ambiguous under the Swift 6 toolchain (optional variant renamed to
+        // substituteArgsInOptionalString): id/text/value/contains/button/label
+        // are optional, elements of ids are non-optional.
+        let json = """
+        {
+            "name": "Substitution Case",
+            "args": { "userName": "alice", "row": 2 },
+            "steps": [
+                { "action": "input", "id": "field_@{userName}", "value": "hello @{userName}" },
+                { "action": "tap", "ids": ["btn_@{userName}", "btn_@{row}"] },
+                { "assert": "text", "id": "label", "contains": "@{userName}" },
+                { "action": "tap", "button": "@{userName}", "label": "@{userName}", "text": "@{userName}" }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let testCase = try JSONDecoder().decode(TestCase.self, from: json)
+        let loader = TestLoader()
+        let substituted = loader.applyArgsSubstitution(to: testCase)
+
+        XCTAssertEqual(substituted.steps[0].id, "field_alice")
+        XCTAssertEqual(substituted.steps[0].value, "hello alice")
+        XCTAssertEqual(substituted.steps[1].ids, ["btn_alice", "btn_2"])
+        XCTAssertEqual(substituted.steps[2].contains, "alice")
+        XCTAssertEqual(substituted.steps[3].button, "alice")
+        XCTAssertEqual(substituted.steps[3].label, "alice")
+        XCTAssertEqual(substituted.steps[3].text, "alice")
+        // Untouched fields survive
+        XCTAssertEqual(substituted.steps[2].assert, "text")
+        XCTAssertEqual(substituted.steps[2].id, "label")
+    }
+
+    func testArgsSubstitutionFlowOverridesScreenDefaults() throws {
+        let json = """
+        {
+            "name": "Override Case",
+            "args": { "userName": "default" },
+            "steps": [
+                { "assert": "text", "id": "greeting", "equals": "Hi @{userName}" }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let testCase = try JSONDecoder().decode(TestCase.self, from: json)
+        let loader = TestLoader()
+        let substituted = loader.applyArgsSubstitution(
+            to: testCase,
+            flowArgs: ["userName": AnyCodable("bob")]
+        )
+
+        XCTAssertEqual(substituted.steps[0].equals?.stringValue, "Hi bob")
     }
 }

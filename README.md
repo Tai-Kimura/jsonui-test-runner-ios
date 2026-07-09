@@ -207,3 +207,20 @@ JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングさ�
 | `text` | テキスト検証 |
 | `count` | 要素数検証 |
 | `state` | ViewModel状態検証 |
+
+## API モック
+
+`jsonui-test mock serve` のモックサーバーに向けて、空状態・エラー状態を決定的にテストできます。
+アプリの向き先は `launch.arguments.apiBase` で差し替え、ランナーにサーバー URL とトークンを渡します:
+
+```swift
+var config = TestRunnerConfig()
+config.mockServerURL = URL(string: "http://localhost:8790")
+config.mockToken = ProcessInfo.processInfo.environment["JSONUI_MOCK_TOKEN"]
+```
+
+- screen テストの root `mocks`（例: `{"listStocks": "empty"}`）は、ケース実行前に
+  シナリオを設定してアプリを再起動してから適用されます（シナリオはファイル単位。
+  正常/空/エラーは別ファイルに分割）。
+- flow テストでは `setMocks` ステップで遷移途中にシナリオを切り替えます（次の遷移で再 fetch）。
+- 各実行の終了時にシナリオは `default` にリセットされます。

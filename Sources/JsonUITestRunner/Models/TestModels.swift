@@ -1,5 +1,31 @@
 import Foundation
 
+// MARK: - Runtime Variable Store
+
+/// Shared store for runtime variables written by `readText` and resolved as @{name}
+/// at step-execution time. Lives for the duration of one runner invocation.
+public final class VariableStore {
+    private var values: [String: String] = [:]
+
+    public init() {}
+
+    public func set(_ name: String, to value: String) {
+        values[name] = value
+    }
+
+    public func get(_ name: String) -> String? {
+        values[name]
+    }
+
+    public var asDictionary: [String: Any] {
+        values
+    }
+
+    public var isEmpty: Bool {
+        values.isEmpty
+    }
+}
+
 // MARK: - Screen Test
 
 public struct ScreenTest: Codable {
@@ -8,9 +34,41 @@ public struct ScreenTest: Codable {
     public let metadata: TestMetadata
     public let platform: PlatformTarget?
     public let initialState: InitialState?
+    public let launch: LaunchConfig?
+    /// API mock scenario set applied (and the app relaunched) before the cases run
+    public let mocks: [String: String]?
     public let setup: [TestStep]?
     public let teardown: [TestStep]?
     public let cases: [TestCase]
+}
+
+// MARK: - Launch Configuration
+
+public struct LaunchConfig: Codable {
+    /// Clear app data before launch (JSONUI_TEST_CLEAR_STATE env contract)
+    public let clearState: Bool?
+    /// Permission grants applied before launch (name -> allow|deny|unset)
+    public let permissions: [String: String]?
+    /// Launch arguments passed to the app (launchEnvironment JSONUI_TEST_ARGS)
+    public let arguments: [String: AnyCodable]?
+}
+
+// MARK: - Condition (for `when` and `repeat.while`)
+
+public struct WhenCondition: Codable {
+    /// Instant check: element is currently visible
+    public let visible: String?
+    /// Instant check: element is currently absent or invisible
+    public let notVisible: String?
+    /// Current platform matches
+    public let platform: PlatformTarget?
+    /// ViewModel state matches (requires a state provider)
+    public let state: StateCondition?
+}
+
+public struct StateCondition: Codable {
+    public let path: String
+    public let equals: AnyCodable
 }
 
 public struct TestSource: Codable {
@@ -37,16 +95,19 @@ public struct TestCase: Codable {
     public let platform: PlatformTarget?
     public let initialState: InitialState?
     public let steps: [TestStep]
+    /// Default argument values for @{varName} substitution
+    public let args: [String: AnyCodable]?
 }
 
 // MARK: - Flow Test
 
 public struct FlowTest: Codable {
     public let type: String
-    public let sources: [FlowTestSource]
+    public let sources: [FlowTestSource]?  // Now optional (not needed when using file references)
     public let metadata: TestMetadata
     public let platform: PlatformTarget?
     public let initialState: FlowInitialState?
+    public let launch: LaunchConfig?
     public let setup: [FlowTestStep]?
     public let teardown: [FlowTestStep]?
     public let steps: [FlowTestStep]
@@ -65,7 +126,8 @@ public struct FlowInitialState: Codable {
 }
 
 public struct FlowTestStep: Codable {
-    public let screen: String
+    // For inline steps
+    public let screen: String?
     public let action: String?
     public let assert: String?
     public let id: String?
@@ -84,6 +146,51 @@ public struct FlowTestStep: Codable {
     public let button: String?
     public let label: String?
     public let index: Int?
+
+    // Advanced feature fields (common step attributes + new actions)
+    public let optional: Bool?
+    public let when: WhenCondition?
+    public let retryTapIfNoChange: Bool?
+    public let container: String?
+    public let variable: String?
+    public let times: Int?
+    public let `while`: WhenCondition?
+    public let maxRetries: Int?
+    public let latitude: Double?
+    public let longitude: Double?
+    public let paths: [String]?
+    public let cropId: String?
+    public let threshold: Double?
+    /// Scenario map for the setMocks action (operationId -> scenario)
+    public let mocks: [String: String]?
+
+    // For file reference steps
+    public let file: String?
+    public let `case`: String?
+    public let cases: [String]?
+    /// Arguments to override screen test default args (for file reference steps)
+    public let args: [String: AnyCodable]?
+
+    // For block steps (grouped inline actions)
+    public let block: String?
+    public let description: String?
+    public let descriptionFile: String?
+    public let steps: [FlowTestStep]?
+
+    /// Whether this is a file reference step
+    public var isFileReference: Bool {
+        file != nil
+    }
+
+    /// Whether this is a block step
+    public var isBlockStep: Bool {
+        block != nil
+    }
+
+    /// Whether this is an inline action/assertion step
+    public var isInlineStep: Bool {
+        screen != nil && (action != nil || assert != nil)
+    }
 }
 
 public struct Checkpoint: Codable {
@@ -114,12 +221,122 @@ public struct TestStep: Codable {
     public let label: String?
     public let index: Int?
 
+    // Advanced feature fields (common step attributes + new actions)
+    public let optional: Bool?
+    public let when: WhenCondition?
+    public let retryTapIfNoChange: Bool?
+    public let container: String?
+    public let variable: String?
+    public let times: Int?
+    public let `while`: WhenCondition?
+    /// Nested steps for repeat/retry control actions
+    public let steps: [TestStep]?
+    public let maxRetries: Int?
+    public let latitude: Double?
+    public let longitude: Double?
+    public let paths: [String]?
+    public let cropId: String?
+    public let threshold: Double?
+    /// Scenario map for the setMocks action (operationId -> scenario)
+    public let mocks: [String: String]?
+
+    public init(
+        action: String? = nil,
+        assert: String? = nil,
+        id: String? = nil,
+        ids: [String]? = nil,
+        text: String? = nil,
+        value: String? = nil,
+        direction: String? = nil,
+        duration: Int? = nil,
+        timeout: Int? = nil,
+        ms: Int? = nil,
+        name: String? = nil,
+        equals: AnyCodable? = nil,
+        contains: String? = nil,
+        path: String? = nil,
+        amount: Int? = nil,
+        button: String? = nil,
+        label: String? = nil,
+        index: Int? = nil,
+        optional: Bool? = nil,
+        when: WhenCondition? = nil,
+        retryTapIfNoChange: Bool? = nil,
+        container: String? = nil,
+        variable: String? = nil,
+        times: Int? = nil,
+        while whileCondition: WhenCondition? = nil,
+        steps: [TestStep]? = nil,
+        maxRetries: Int? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        paths: [String]? = nil,
+        cropId: String? = nil,
+        threshold: Double? = nil,
+        mocks: [String: String]? = nil
+    ) {
+        self.action = action
+        self.assert = assert
+        self.id = id
+        self.ids = ids
+        self.text = text
+        self.value = value
+        self.direction = direction
+        self.duration = duration
+        self.timeout = timeout
+        self.ms = ms
+        self.name = name
+        self.equals = equals
+        self.contains = contains
+        self.path = path
+        self.amount = amount
+        self.button = button
+        self.label = label
+        self.index = index
+        self.optional = optional
+        self.when = when
+        self.retryTapIfNoChange = retryTapIfNoChange
+        self.container = container
+        self.variable = variable
+        self.times = times
+        self.while = whileCondition
+        self.steps = steps
+        self.maxRetries = maxRetries
+        self.latitude = latitude
+        self.longitude = longitude
+        self.paths = paths
+        self.cropId = cropId
+        self.threshold = threshold
+        self.mocks = mocks
+    }
+
     public var isAction: Bool {
         action != nil
     }
 
     public var isAssertion: Bool {
         assert != nil
+    }
+
+    /// Timeout as a TimeInterval (seconds), falling back to the provided default
+    public func timeoutInterval(default defaultTimeout: TimeInterval) -> TimeInterval {
+        if let timeout = timeout {
+            return TimeInterval(timeout) / 1000.0
+        }
+        return defaultTimeout
+    }
+}
+
+// MARK: - AnyCodable value equality
+
+public extension AnyCodable {
+    /// Structural equality used by state assertions/conditions
+    func isEqual(to other: AnyCodable) -> Bool {
+        if let a = boolValue, let b = other.boolValue { return a == b }
+        if let a = intValue, let b = other.intValue { return a == b }
+        if let a = doubleValue, let b = other.doubleValue { return abs(a - b) < 0.0001 }
+        if let a = stringValue, let b = other.stringValue { return a == b }
+        return String(describing: value) == String(describing: other.value)
     }
 }
 

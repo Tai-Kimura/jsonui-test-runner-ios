@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(CoreLocation)
+import CoreLocation
+#endif
 
 /// Protocol for executing test actions
 public protocol ActionExecutor {
@@ -37,8 +40,14 @@ public enum ActionError: Error, LocalizedError {
 public class XCUITestActionExecutor: ActionExecutor {
 
     private let defaultTimeout: TimeInterval = 5.0
+    private let platform: String
+    /// Runtime variable store written by readText and read by the runner for @{name} substitution
+    private let variables: VariableStore
 
-    public init() {}
+    public init(platform: String = "ios", variables: VariableStore = VariableStore()) {
+        self.platform = platform
+        self.variables = variables
+    }
 
     public func execute(step: TestStep, in app: XCUIApplication) throws {
         guard let action = step.action else {
@@ -58,6 +67,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeClear(step: step, in: app)
         case "scroll":
             try executeScroll(step: step, in: app)
+        case "scrollUntilVisible":
+            try executeScrollUntilVisible(step: step, in: app)
         case "swipe":
             try executeSwipe(step: step, in: app)
         case "waitFor":
@@ -76,6 +87,16 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeSelectOption(step: step, in: app)
         case "tapItem":
             try executeTapItem(step: step, in: app)
+        case "selectTab":
+            try executeSelectTab(step: step, in: app)
+        case "readText":
+            try executeReadText(step: step, in: app)
+        case "setLocation":
+            try executeSetLocation(step: step)
+        case "addMedia":
+            throw ActionError.actionFailed(action: "addMedia", reason: "addMedia is not supported on the iOS driver")
+        case "repeat", "retry":
+            throw ActionError.actionFailed(action: action, reason: "'\(action)' is a control step handled by the test runner")
         default:
             throw ActionError.unknownAction(action: action)
         }
@@ -85,30 +106,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         guard flowStep.action != nil else {
             throw ActionError.unknownAction(action: "nil")
         }
-
-        // Convert FlowTestStep to TestStep for reuse
-        let step = TestStep(
-            action: flowStep.action,
-            assert: flowStep.assert,
-            id: flowStep.id,
-            ids: flowStep.ids,
-            text: flowStep.text,
-            value: flowStep.value,
-            direction: flowStep.direction,
-            duration: flowStep.duration,
-            timeout: flowStep.timeout,
-            ms: flowStep.ms,
-            name: flowStep.name,
-            equals: flowStep.equals,
-            contains: flowStep.contains,
-            path: flowStep.path,
-            amount: flowStep.amount,
-            button: flowStep.button,
-            label: flowStep.label,
-            index: flowStep.index
-        )
-
-        try execute(step: step, in: app)
+        try execute(step: flowStep.toTestStep(), in: app)
     }
 
     // MARK: - Action Implementations
@@ -118,11 +116,22 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "tap", parameter: "id")
         }
 
-        let element = try findElement(id: id, in: app)
+        let element = try findTappableElement(id: id, in: app)
 
         // If text is specified, tap on the specific text portion within the element
         if let targetText = step.text {
             try tapTextPortion(element: element, targetText: targetText, fullText: element.label)
+            return
+        }
+
+        if step.retryTapIfNoChange == true {
+            // Ghost-tap mitigation: re-tap once if the hierarchy did not change
+            let before = app.debugDescription
+            element.tap()
+            Thread.sleep(forTimeInterval: 0.5)
+            if app.debugDescription == before {
+                element.tap()
+            }
         } else {
             element.tap()
         }
@@ -133,7 +142,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "doubleTap", parameter: "id")
         }
 
-        let element = try findElement(id: id, in: app)
+        let element = try findTappableElement(id: id, in: app)
         element.doubleTap()
     }
 
@@ -142,8 +151,12 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "longPress", parameter: "id")
         }
 
-        let element = try findElement(id: id, in: app)
-        let duration = TimeInterval(step.duration ?? 500) / 1000.0
+        let element = try findTappableElement(id: id, in: app)
+        // Default 800ms, not 500ms: the iOS long-press recognizer minimum
+        // (SwiftUI LongPressGesture / UILongPressGestureRecognizer) is 0.5s,
+        // so a press of exactly 500ms races the recognizer and fires only
+        // sometimes. The press must comfortably exceed the threshold.
+        let duration = TimeInterval(step.duration ?? 800) / 1000.0
         element.press(forDuration: duration)
     }
 
@@ -155,8 +168,26 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "input", parameter: "value")
         }
 
-        let element = try findElement(id: id, in: app)
+        let element = try findTypableElement(id: id, in: app)
         element.tap()
+
+        // `input` SETS the field value (parity with the web driver's
+        // Playwright fill() and Android's setText): clear existing text first.
+        // CRITICAL: element.value returns the PLACEHOLDER for an empty field,
+        // so guard the clear against placeholderValue — otherwise an empty
+        // field (value == placeholder) wrongly enters the clear branch, whose
+        // bottom-right coordinate tap drops keyboard focus and makes the
+        // following typeText fail with "no keyboard focus".
+        if let existing = element.value as? String,
+           !existing.isEmpty,
+           existing != element.placeholderValue {
+            // Caret position after tap() is unspecified (TextEditor tends to
+            // put it at the start): tap the bottom-right of the element to
+            // move the caret to the end, then backspace through everything.
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.9)).tap()
+            let deleteString = String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count)
+            element.typeText(deleteString)
+        }
         element.typeText(value)
     }
 
@@ -165,7 +196,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "clear", parameter: "id")
         }
 
-        let element = try findElement(id: id, in: app)
+        let element = try findTypableElement(id: id, in: app)
         element.tap()
 
         // Select all and delete
@@ -197,6 +228,103 @@ public class XCUITestActionExecutor: ActionExecutor {
         default:
             throw ActionError.actionFailed(action: "scroll", reason: "Invalid direction: \(direction)")
         }
+    }
+
+    private func executeScrollUntilVisible(step: TestStep, in app: XCUIApplication) throws {
+        guard let id = step.id else {
+            throw ActionError.missingParameter(action: "scrollUntilVisible", parameter: "id")
+        }
+        let direction = step.direction ?? "down"
+        let timeout = step.timeoutInterval(default: 20.0)
+
+        func targetVisible() -> Bool {
+            let element = findElementQuery(id: id, in: app)
+            return element.exists && (element.isHittable || !element.frame.isEmpty)
+        }
+
+        if targetVisible() {
+            return
+        }
+
+        // Resolve the scrollable container: explicit id, else the first scroll view,
+        // else the whole app as a swipe surface.
+        let scroller: XCUIElement
+        if let containerId = step.container {
+            scroller = findElementQuery(id: containerId, in: app)
+        } else if app.scrollViews.firstMatch.exists {
+            scroller = app.scrollViews.firstMatch
+        } else {
+            scroller = app
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        var previousSnapshot = ""
+        var unchangedCount = 0
+
+        while Date() < deadline {
+            switch direction {
+            case "up": scroller.swipeDown()
+            case "down": scroller.swipeUp()
+            case "left": scroller.swipeRight()
+            case "right": scroller.swipeLeft()
+            default:
+                throw ActionError.actionFailed(action: "scrollUntilVisible", reason: "Invalid direction: \(direction)")
+            }
+
+            if targetVisible() {
+                return
+            }
+
+            // End-reached detection: two consecutive scrolls with no hierarchy change
+            let snapshot = app.debugDescription
+            if snapshot == previousSnapshot {
+                unchangedCount += 1
+                if unchangedCount >= 1 {
+                    throw ActionError.actionFailed(
+                        action: "scrollUntilVisible",
+                        reason: "Element '\(id)' not found after scrolling to the end"
+                    )
+                }
+            } else {
+                unchangedCount = 0
+            }
+            previousSnapshot = snapshot
+        }
+
+        throw ActionError.timeout(id: id, timeout: Int(timeout * 1000))
+    }
+
+    private func executeReadText(step: TestStep, in app: XCUIApplication) throws {
+        guard let id = step.id else {
+            throw ActionError.missingParameter(action: "readText", parameter: "id")
+        }
+        guard let variable = step.variable else {
+            throw ActionError.missingParameter(action: "readText", parameter: "variable")
+        }
+        let element = try findElement(id: id, in: app)
+        let text: String
+        if let valueText = element.value as? String, !valueText.isEmpty {
+            text = valueText
+        } else {
+            text = element.label
+        }
+        variables.set(variable, to: text)
+    }
+
+    private func executeSetLocation(step: TestStep) throws {
+        guard let latitude = step.latitude, let longitude = step.longitude else {
+            throw ActionError.missingParameter(action: "setLocation", parameter: "latitude/longitude")
+        }
+        #if canImport(CoreLocation)
+        if #available(iOS 16.4, *) {
+            let location = CLLocation(latitude: latitude, longitude: longitude)
+            XCUIDevice.shared.location = XCUILocation(location: location)
+        } else {
+            throw ActionError.actionFailed(action: "setLocation", reason: "setLocation requires iOS 16.4 or newer")
+        }
+        #else
+        throw ActionError.actionFailed(action: "setLocation", reason: "CoreLocation is not available")
+        #endif
     }
 
     private func executeSwipe(step: TestStep, in app: XCUIApplication) throws {
@@ -286,15 +414,14 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "screenshot", parameter: "name")
         }
 
+        // Save the screenshot PNG to a screenshots directory under the temp dir.
+        // (Failure/checkpoint screenshots are attached as XCTAttachment by the runner;
+        // this explicit action persists a named capture that survives outside a test.)
         let screenshot = app.screenshot()
-        let attachment = XCTAttachment(screenshot: screenshot)
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-
-        // Note: XCTContext.runActivity is used to attach screenshots in actual tests
-        XCTContext.runActivity(named: "Screenshot: \(name)") { activity in
-            activity.add(attachment)
-        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("jsonui-screenshots", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(name).png")
+        try screenshot.pngRepresentation.write(to: url)
     }
 
     private func executeAlertTap(step: TestStep, in app: XCUIApplication) throws {
@@ -554,6 +681,51 @@ public class XCUITestActionExecutor: ActionExecutor {
         element.tap()
     }
 
+    private func executeSelectTab(step: TestStep, in app: XCUIApplication) throws {
+        guard let index = step.index else {
+            throw ActionError.missingParameter(action: "selectTab", parameter: "index")
+        }
+
+        let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
+
+        // For UIKit mode, use standard TabBar buttons directly
+        if platform == "ios-uikit" {
+            let tabBar = app.tabBars.firstMatch
+            if tabBar.waitForExistence(timeout: timeout) {
+                let buttons = tabBar.buttons
+                if index < buttons.count {
+                    buttons.element(boundBy: index).tap()
+                    return
+                }
+            }
+            throw ActionError.actionFailed(action: "selectTab", reason: "Tab at index \(index) not found in TabBar")
+        }
+
+        // For SwiftUI mode (default), try accessibilityIdentifier pattern first
+        if let id = step.id {
+            let tabId = "\(id)_tab_\(index)"
+            let tabElement = app.descendants(matching: .any).matching(identifier: tabId).firstMatch
+
+            if tabElement.waitForExistence(timeout: timeout) {
+                tabElement.tap()
+                return
+            }
+        }
+
+        // Fallback: Use standard TabBar buttons by index (works for both SwiftUI TabView and UIKit)
+        let tabBar = app.tabBars.firstMatch
+        if tabBar.waitForExistence(timeout: timeout) {
+            let buttons = tabBar.buttons
+            if index < buttons.count {
+                buttons.element(boundBy: index).tap()
+                return
+            }
+        }
+
+        let idInfo = step.id ?? "no id"
+        throw ActionError.actionFailed(action: "selectTab", reason: "Tab at index \(index) not found (id: \(idInfo))")
+    }
+
     // MARK: - Helper Methods
 
     /// Fast element query using accessibilityIdentifier matching
@@ -572,6 +744,67 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         return element
+    }
+
+    /// Element resolution for text-input actions. The generic `.any`
+    /// firstMatch can resolve an identifier to a mirror StaticText (SwiftUI
+    /// exposes a field's mirrored label under the same id), which cannot
+    /// take keyboard focus — typeText then fails with "Neither element nor
+    /// any descendant has keyboard focus". Prefer typable element types and
+    /// only fall back to the generic match.
+    private func findTypableElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
+        let generic = findElementQuery(id: id, in: app)
+        guard generic.waitForExistence(timeout: defaultTimeout) else {
+            throw ActionError.elementNotFound(id: id)
+        }
+        let typableTypes: [XCUIElement.ElementType] = [.textField, .secureTextField, .textView, .searchField]
+        for type in typableTypes {
+            let candidate = app.descendants(matching: type).matching(identifier: id).firstMatch
+            if candidate.exists {
+                return candidate
+            }
+        }
+        return generic
+    }
+
+    /// Element resolution for tap-like actions (tap / doubleTap / longPress).
+    /// The generic `.any` firstMatch can resolve an identifier to a mirror
+    /// StaticText or a non-interactive wrapper under the same id — the tap
+    /// then lands on an element that swallows it and the control's callback
+    /// never fires. Snapshot traversal order is not stable across runs, so
+    /// this surfaces as intermittent conformance failures
+    /// (common/onclick__callback_fire, Toggle/onValueChange__callback_fire).
+    /// Prefer interactive element types, then any hittable match, and only
+    /// fall back to the generic match.
+    private func findTappableElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
+        let generic = findElementQuery(id: id, in: app)
+        guard generic.waitForExistence(timeout: defaultTimeout) else {
+            throw ActionError.elementNotFound(id: id)
+        }
+        let interactiveTypes: [XCUIElement.ElementType] = [
+            .button, .switch, .toggle, .checkBox, .segmentedControl,
+            .slider, .stepper, .link, .cell,
+        ]
+        for type in interactiveTypes {
+            let candidate = app.descendants(matching: type).matching(identifier: id).firstMatch
+            if candidate.exists {
+                return candidate
+            }
+        }
+        // No interactive-typed match — scan the first few generic matches for
+        // a hittable one (the mirror StaticText of an offscreen control is
+        // typically not hittable at the control's position).
+        let matches = app.descendants(matching: .any).matching(identifier: id)
+        let count = min(matches.count, 8)
+        var index = 0
+        while index < count {
+            let candidate = matches.element(boundBy: index)
+            if candidate.exists && candidate.isHittable {
+                return candidate
+            }
+            index += 1
+        }
+        return generic
     }
 
     /// Tap on a specific text portion within an element
