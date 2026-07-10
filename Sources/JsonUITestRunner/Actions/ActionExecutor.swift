@@ -81,6 +81,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeWait(step: step)
         case "back":
             try executeBack(in: app)
+        case "hideKeyboard":
+            try executeHideKeyboard(in: app)
         case "screenshot":
             try executeScreenshot(step: step, in: app)
         case "alertTap":
@@ -451,6 +453,45 @@ public class XCUITestActionExecutor: ActionExecutor {
         let coordinate = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
         let targetCoordinate = app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5))
         coordinate.press(forDuration: 0.1, thenDragTo: targetCoordinate)
+    }
+
+    private func executeHideKeyboard(in app: XCUIApplication) throws {
+        // No-op when no keyboard is up — the action is a precondition
+        // normalizer, not an assertion.
+        guard app.keyboards.firstMatch.exists else { return }
+
+        // 1. An explicit dismiss key when the keyboard has one (iPad).
+        for identifier in ["Hide keyboard", "Dismiss", "キーボードを非表示"] {
+            let key = app.keyboards.firstMatch.buttons[identifier]
+            if key.exists, key.isHittable {
+                key.tap()
+                if !app.keyboards.firstMatch.waitForExistence(timeout: 0.5) { return }
+            }
+        }
+
+        // 2. An input-accessory toolbar Done (SwiftJsonUI `doneText`).
+        for label in ["Done", "完了", "閉じる", "Close"] {
+            let button = app.toolbars.buttons[label]
+            if button.exists, button.isHittable {
+                button.tap()
+                if !app.keyboards.firstMatch.waitForExistence(timeout: 0.5) { return }
+            }
+        }
+
+        // 3. Interactive scroll dismiss: drag from the content area down over
+        //    the keyboard. SwiftUI ScrollView's default scrollDismissesKeyboard
+        //    (.automatic) is interactive on iPhone, so this works without app
+        //    cooperation — including number-pad, which has no return key.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98))
+        start.press(forDuration: 0.05, thenDragTo: end)
+
+        if app.keyboards.firstMatch.waitForExistence(timeout: 1.0) {
+            throw ActionError.actionFailed(
+                action: "hideKeyboard",
+                reason: "Keyboard still visible after dismiss key / accessory Done / interactive scroll-dismiss attempts"
+            )
+        }
     }
 
     private func executeScreenshot(step: TestStep, in app: XCUIApplication) throws {
