@@ -867,6 +867,18 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// Tap on a specific text portion within an element
     /// Calculates the approximate position of the target text and taps there
     private func tapTextPortion(element: XCUIElement, targetText: String, fullText: String) throws {
+        // Preferred: SwiftUI exposes an AttributedString link range (a
+        // partialAttributes onClick range renders as an app:// link) as its
+        // own accessibility element whose label is the range text and whose
+        // frame is the real glyph rect. Exact for centered/matchParent and
+        // wrapped labels where the proportional estimate below misses
+        // (test-partialattributes-subrange-tap-misses-on-centered-matchparent-label).
+        let link = element.links.matching(NSPredicate(format: "label == %@", targetText)).firstMatch
+        if link.exists, link.isHittable {
+            link.tap()
+            return
+        }
+
         guard let range = fullText.range(of: targetText) else {
             throw ActionError.actionFailed(action: "tap", reason: "Text '\(targetText)' not found in element label '\(fullText)'")
         }
