@@ -475,30 +475,43 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
 
-        // Wait for alert to appear
-        let alert = app.alerts.firstMatch
-        if !alert.waitForExistence(timeout: timeout) {
-            throw ActionError.actionFailed(action: "alertTap", reason: "No alert appeared within \(Int(timeout * 1000))ms")
-        }
+        // SpringBoard owns system prompts (Save Password?, permission dialogs).
+        // They cover the app but never appear in the app's element tree, so
+        // sweep both processes. addUIInterruptionMonitor does not reliably
+        // fire for these prompts on current iOS.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let providers = [app, springboard]
 
-        // Find and tap the button with matching text
-        let button = alert.buttons[buttonText]
-        if button.exists {
-            button.tap()
-            return
-        }
+        var sawAlert = false
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            for provider in providers {
+                for container in [provider.alerts.firstMatch, provider.sheets.firstMatch] {
+                    guard container.exists else { continue }
+                    sawAlert = true
+                    let button = container.buttons[buttonText]
+                    if button.exists {
+                        button.tap()
+                        return
+                    }
+                }
+            }
 
-        // Try scrollViews for action sheets
-        let actionSheet = app.sheets.firstMatch
-        if actionSheet.exists {
-            let sheetButton = actionSheet.buttons[buttonText]
-            if sheetButton.exists {
-                sheetButton.tap()
+            // The Save Password sheet exposes its buttons directly under
+            // SpringBoard on some iOS versions, outside alerts/sheets queries.
+            let systemButton = springboard.buttons[buttonText]
+            if systemButton.exists, systemButton.isHittable {
+                systemButton.tap()
                 return
             }
-        }
 
-        throw ActionError.actionFailed(action: "alertTap", reason: "Button '\(buttonText)' not found in alert")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        if sawAlert {
+            throw ActionError.actionFailed(action: "alertTap", reason: "Button '\(buttonText)' not found in alert")
+        }
+        throw ActionError.actionFailed(action: "alertTap", reason: "No alert appeared within \(Int(timeout * 1000))ms")
     }
 
     private func executeSelectOption(step: TestStep, in app: XCUIApplication) throws {
