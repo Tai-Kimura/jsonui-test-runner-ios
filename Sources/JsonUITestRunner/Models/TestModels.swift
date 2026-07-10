@@ -64,6 +64,51 @@ public struct WhenCondition: Codable {
     public let platform: PlatformTarget?
     /// ViewModel state matches (requires a state provider)
     public let state: StateCondition?
+    /// Current size matches (named size-class bucket or constraint object),
+    /// evaluated against the live device/window size at step time
+    public let responsive: ResponsiveCondition?
+    /// Condition keys present in the JSON that this driver cannot evaluate
+    /// (written against a newer schema than this driver). Codable would
+    /// silently drop them and the condition would run-anyway on the keys it
+    /// does know — the fail-safe rule instead treats any unknown key as UNMET,
+    /// so the gated step is skipped (never run-anyway, never a hard error).
+    public let unknownKeys: [String]
+
+    /// Condition keys this driver knows how to evaluate.
+    private static let knownKeys: Set<String> = ["visible", "notVisible", "platform", "state", "responsive"]
+
+    private enum CodingKeys: String, CodingKey {
+        case visible
+        case notVisible
+        case platform
+        case state
+        case responsive
+    }
+
+    /// Free-form string key used to enumerate the condition's raw key set.
+    private struct RawCodingKey: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.visible = try container.decodeIfPresent(String.self, forKey: .visible)
+        self.notVisible = try container.decodeIfPresent(String.self, forKey: .notVisible)
+        self.platform = try container.decodeIfPresent(PlatformTarget.self, forKey: .platform)
+        self.state = try container.decodeIfPresent(StateCondition.self, forKey: .state)
+        self.responsive = try container.decodeIfPresent(ResponsiveCondition.self, forKey: .responsive)
+
+        // Capture the full key set via a raw keyed container and record every
+        // key outside the known set (values stay undecoded on purpose).
+        let rawContainer = try decoder.container(keyedBy: RawCodingKey.self)
+        self.unknownKeys = rawContainer.allKeys
+            .map { $0.stringValue }
+            .filter { !Self.knownKeys.contains($0) }
+            .sorted()
+    }
 }
 
 public struct StateCondition: Codable {
@@ -93,6 +138,10 @@ public struct TestCase: Codable {
     public let description: String?
     public let skip: Bool?
     public let platform: PlatformTarget?
+    /// Case-level responsive gate (named bucket string or constraint object),
+    /// evaluated against the live device/window size before the case runs —
+    /// unmet -> the case is skipped with skipReason "responsive"
+    public let responsive: ResponsiveCondition?
     public let initialState: InitialState?
     public let steps: [TestStep]
     /// Default argument values for @{varName} substitution
@@ -163,6 +212,8 @@ public struct FlowTestStep: Codable {
     public let threshold: Double?
     /// Scenario map for the setMocks action (operationId -> scenario)
     public let mocks: [String: String]?
+    /// Target orientation for the setOrientation action (portrait|landscape)
+    public let orientation: String?
 
     // For file reference steps
     public let file: String?
@@ -239,6 +290,8 @@ public struct TestStep: Codable {
     public let threshold: Double?
     /// Scenario map for the setMocks action (operationId -> scenario)
     public let mocks: [String: String]?
+    /// Target orientation for the setOrientation action (portrait|landscape)
+    public let orientation: String?
 
     public init(
         action: String? = nil,
@@ -273,7 +326,8 @@ public struct TestStep: Codable {
         paths: [String]? = nil,
         cropId: String? = nil,
         threshold: Double? = nil,
-        mocks: [String: String]? = nil
+        mocks: [String: String]? = nil,
+        orientation: String? = nil
     ) {
         self.action = action
         self.assert = assert
@@ -308,6 +362,7 @@ public struct TestStep: Codable {
         self.cropId = cropId
         self.threshold = threshold
         self.mocks = mocks
+        self.orientation = orientation
     }
 
     public var isAction: Bool {

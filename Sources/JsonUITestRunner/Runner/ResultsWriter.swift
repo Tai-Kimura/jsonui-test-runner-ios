@@ -28,6 +28,12 @@ public enum ResultsWriter {
                 if let error = caseResult.error {
                     entry["error"] = error.localizedDescription
                 }
+                // Distinct skip reason (platform vs responsive gate) so a
+                // gate-caused skip never hides as an unexplained green row;
+                // plain `skip: true` skips carry no reason.
+                if caseResult.skipped, let reason = caseResult.skipReason {
+                    entry["skipReason"] = reason.rawValue
+                }
                 if !caseResult.warnings.isEmpty {
                     entry["warnings"] = caseResult.warnings
                 }

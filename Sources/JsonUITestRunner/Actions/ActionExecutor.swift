@@ -95,6 +95,15 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeReadText(step: step, in: app)
         case "setLocation":
             try executeSetLocation(step: step)
+        case "setViewport":
+            // Permanently web-only: the viewport is not drivable on iOS (a
+            // running app cannot be freely resized), so this is a documented
+            // no-op instead of an unknown-action throw. Asserts that depend on
+            // the swept size must self-gate with a matching `when.responsive`
+            // so they skip cleanly instead of running at the device's fixed size.
+            print("Warning: 'setViewport' is a no-op on the iOS driver (device size is fixed); gate dependent asserts with when.responsive")
+        case "setOrientation":
+            try executeSetOrientation(step: step)
         case "addMedia":
             throw ActionError.actionFailed(action: "addMedia", reason: "addMedia is not supported on the iOS driver")
         case "repeat", "retry":
@@ -340,6 +349,26 @@ public class XCUITestActionExecutor: ActionExecutor {
         #else
         throw ActionError.actionFailed(action: "setLocation", reason: "CoreLocation is not available")
         #endif
+    }
+
+    /// Rotate the device via XCUIDevice. "landscape" maps to landscapeLeft
+    /// (home button / indicator on the right) — one deterministic pick, since
+    /// the test vocabulary does not distinguish left from right.
+    private func executeSetOrientation(step: TestStep) throws {
+        guard let orientation = step.orientation else {
+            throw ActionError.missingParameter(action: "setOrientation", parameter: "orientation")
+        }
+        switch orientation {
+        case "portrait":
+            XCUIDevice.shared.orientation = .portrait
+        case "landscape":
+            XCUIDevice.shared.orientation = .landscapeLeft
+        default:
+            throw ActionError.actionFailed(
+                action: "setOrientation",
+                reason: "Invalid orientation: \(orientation) (expected portrait|landscape)"
+            )
+        }
     }
 
     private func executeSwipe(step: TestStep, in app: XCUIApplication) throws {

@@ -1,5 +1,8 @@
 import XCTest
 @testable import JsonUITestRunner
+#if canImport(UIKit)
+import UIKit
+#endif
 
 final class JsonUITestRunnerTests: XCTestCase {
 
@@ -173,6 +176,322 @@ final class JsonUITestRunnerTests: XCTestCase {
         // Untouched fields survive
         XCTAssertEqual(substituted.steps[2].assert, "text")
         XCTAssertEqual(substituted.steps[2].id, "label")
+    }
+
+    func testWhenConditionCapturesUnknownKeys() throws {
+        // Known keys only -> nothing unknown, condition evaluates normally.
+        // `responsive` is a known key since Phase 2.
+        let knownJson = """
+        { "visible": "sidebar", "platform": "ios", "responsive": "regular" }
+        """.data(using: .utf8)!
+        let known = try JSONDecoder().decode(WhenCondition.self, from: knownJson)
+        XCTAssertTrue(known.unknownKeys.isEmpty)
+        XCTAssertEqual(known.visible, "sidebar")
+        XCTAssertEqual(known.responsive, .bucket("regular"))
+
+        // A future key is captured instead of being silently dropped by
+        // Codable (fail-safe skip contract)
+        let unknownJson = """
+        { "visible": "sidebar", "futureKey": { "minWidth": 768 } }
+        """.data(using: .utf8)!
+        let unknown = try JSONDecoder().decode(WhenCondition.self, from: unknownJson)
+        XCTAssertEqual(unknown.unknownKeys, ["futureKey"])
+        XCTAssertEqual(unknown.visible, "sidebar")
+    }
+
+    // MARK: - Responsive decoding
+
+    func testWhenConditionDecodesResponsive() throws {
+        // Named bucket
+        let namedJson = """
+        { "responsive": "compact-landscape" }
+        """.data(using: .utf8)!
+        let named = try JSONDecoder().decode(WhenCondition.self, from: namedJson)
+        XCTAssertEqual(named.responsive, .bucket("compact-landscape"))
+
+        // Constraint object
+        let constraintJson = """
+        { "responsive": { "minWidth": 768, "maxWidth": 1024, "orientation": "portrait" } }
+        """.data(using: .utf8)!
+        let constrained = try JSONDecoder().decode(WhenCondition.self, from: constraintJson)
+        XCTAssertEqual(
+            constrained.responsive,
+            .constraint(ResponsiveConstraint(minWidth: 768, maxWidth: 1024, orientation: "portrait"))
+        )
+    }
+
+    func testCaseLevelResponsiveDecodesTyped() throws {
+        // Named-bucket form
+        let namedJson = """
+        {
+            "name": "Regular Only",
+            "responsive": "regular",
+            "steps": [ { "assert": "visible", "id": "sidebar" } ]
+        }
+        """.data(using: .utf8)!
+        let named = try JSONDecoder().decode(TestCase.self, from: namedJson)
+        XCTAssertEqual(named.responsive, .bucket("regular"))
+
+        // Constraint-object form
+        let objectJson = """
+        {
+            "name": "Wide Only",
+            "responsive": { "minWidth": 768, "minHeight": 600 },
+            "steps": []
+        }
+        """.data(using: .utf8)!
+        let object = try JSONDecoder().decode(TestCase.self, from: objectJson)
+        XCTAssertEqual(object.responsive, .constraint(ResponsiveConstraint(minWidth: 768, minHeight: 600)))
+
+        // Absent stays nil (case runs normally)
+        let plainJson = """
+        { "name": "Plain", "steps": [] }
+        """.data(using: .utf8)!
+        let plain = try JSONDecoder().decode(TestCase.self, from: plainJson)
+        XCTAssertNil(plain.responsive)
+    }
+
+    func testSetOrientationStepDecoding() throws {
+        let json = """
+        { "action": "setOrientation", "orientation": "landscape" }
+        """.data(using: .utf8)!
+        let step = try JSONDecoder().decode(TestStep.self, from: json)
+        XCTAssertEqual(step.action, "setOrientation")
+        XCTAssertEqual(step.orientation, "landscape")
+    }
+
+    // MARK: - Responsive evaluation (pure functions, no live app)
+
+    private func env(
+        h: SizeClassValue,
+        v: SizeClassValue,
+        width: Double = 390,
+        height: Double = 844,
+        orientation: ResponsiveOrientation = .portrait
+    ) -> ResponsiveEnvironment {
+        ResponsiveEnvironment(
+            horizontalSizeClass: h,
+            verticalSizeClass: v,
+            width: width,
+            height: height,
+            orientation: orientation
+        )
+    }
+
+    func testBucketMatchingMirrorsSjuiSizeClassRules() {
+        // iPhone portrait: wC hR
+        let phonePortrait = env(h: .compact, v: .regular)
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("compact", in: phonePortrait))
+        // medium folds to compact on iOS (renderer rule)
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("medium", in: phonePortrait))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("regular", in: phonePortrait))
+        // landscape <=> verticalSizeClass == .compact
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("landscape", in: phonePortrait))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("compact-landscape", in: phonePortrait))
+
+        // iPhone landscape (non-Max): wC hC
+        let phoneLandscape = env(h: .compact, v: .compact, width: 844, height: 390, orientation: .landscape)
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("landscape", in: phoneLandscape))
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("compact", in: phoneLandscape))
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("compact-landscape", in: phoneLandscape))
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("medium-landscape", in: phoneLandscape))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("regular-landscape", in: phoneLandscape))
+
+        // iPad (any orientation): wR hR — landscape bucket NEVER matches
+        // (faithful to the renderer: vertical stays regular on iPad)
+        let pad = env(h: .regular, v: .regular, width: 1180, height: 820, orientation: .landscape)
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("regular", in: pad))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("compact", in: pad))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("medium", in: pad))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("landscape", in: pad))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("regular-landscape", in: pad))
+
+        // iPhone Max landscape: wR hC — regular-landscape matches
+        let maxLandscape = env(h: .regular, v: .compact, width: 932, height: 430, orientation: .landscape)
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("regular", in: maxLandscape))
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("regular-landscape", in: maxLandscape))
+        XCTAssertTrue(ResponsiveEvaluator.matchesBucket("landscape", in: maxLandscape))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("compact-landscape", in: maxLandscape))
+    }
+
+    func testBucketMatchingFailSafe() {
+        let phonePortrait = env(h: .compact, v: .regular)
+        // Unknown bucket (newer schema than this driver) is UNMET -> skip,
+        // never run-anyway. "expanded" is the canonical wrong name.
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("expanded", in: phonePortrait))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("expanded-landscape", in: env(h: .compact, v: .compact)))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("", in: phonePortrait))
+
+        // Unresolvable size classes -> every size-class bucket is UNMET
+        let unknown = env(h: .unspecified, v: .unspecified)
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("compact", in: unknown))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("medium", in: unknown))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("regular", in: unknown))
+        XCTAssertFalse(ResponsiveEvaluator.matchesBucket("landscape", in: unknown))
+    }
+
+    func testConstraintMatchingInclusiveBounds() {
+        let ipadPortrait = env(h: .regular, v: .regular, width: 820, height: 1180, orientation: .portrait)
+
+        // Inclusive min/max: the boundary value matches
+        XCTAssertTrue(ResponsiveEvaluator.matchesConstraint(ResponsiveConstraint(minWidth: 820), in: ipadPortrait))
+        XCTAssertTrue(ResponsiveEvaluator.matchesConstraint(ResponsiveConstraint(maxWidth: 820), in: ipadPortrait))
+        XCTAssertFalse(ResponsiveEvaluator.matchesConstraint(ResponsiveConstraint(minWidth: 821), in: ipadPortrait))
+        XCTAssertFalse(ResponsiveEvaluator.matchesConstraint(ResponsiveConstraint(maxWidth: 819), in: ipadPortrait))
+        XCTAssertTrue(ResponsiveEvaluator.matchesConstraint(ResponsiveConstraint(minHeight: 1180, maxHeight: 1180), in: ipadPortrait))
+
+        // Present keys AND together
+        XCTAssertTrue(ResponsiveEvaluator.matchesConstraint(
+            ResponsiveConstraint(minWidth: 768, maxWidth: 1024, orientation: "portrait"),
+            in: ipadPortrait
+        ))
+        XCTAssertFalse(ResponsiveEvaluator.matchesConstraint(
+            ResponsiveConstraint(minWidth: 768, orientation: "landscape"),
+            in: ipadPortrait
+        ))
+
+        // Unknown orientation value never matches (fail-safe)
+        XCTAssertFalse(ResponsiveEvaluator.matchesConstraint(ResponsiveConstraint(orientation: "sideways"), in: ipadPortrait))
+    }
+
+    func testResponsiveConditionMatchesDispatch() {
+        let phoneLandscape = env(h: .compact, v: .compact, width: 844, height: 390, orientation: .landscape)
+        XCTAssertTrue(ResponsiveEvaluator.matches(.bucket("landscape"), in: phoneLandscape))
+        XCTAssertFalse(ResponsiveEvaluator.matches(.bucket("regular"), in: phoneLandscape))
+        XCTAssertTrue(ResponsiveEvaluator.matches(
+            .constraint(ResponsiveConstraint(minWidth: 800, orientation: "landscape")),
+            in: phoneLandscape
+        ))
+        XCTAssertFalse(ResponsiveEvaluator.matches(
+            .constraint(ResponsiveConstraint(minWidth: 900)),
+            in: phoneLandscape
+        ))
+    }
+
+    func testDeriveOrientation() {
+        XCTAssertEqual(ResponsiveEvaluator.deriveOrientation(width: 390, height: 844), .portrait)
+        XCTAssertEqual(ResponsiveEvaluator.deriveOrientation(width: 844, height: 390), .landscape)
+        // Square counts as landscape (matches the web driver)
+        XCTAssertEqual(ResponsiveEvaluator.deriveOrientation(width: 500, height: 500), .landscape)
+    }
+
+    func testDeriveSizeClasses() {
+        // iPad: regular/regular in both orientations (fullscreen)
+        XCTAssertEqual(
+            ResponsiveEvaluator.deriveSizeClasses(idiom: .pad, orientation: .portrait, width: 820, height: 1180).horizontal,
+            .regular
+        )
+        let padLandscape = ResponsiveEvaluator.deriveSizeClasses(idiom: .pad, orientation: .landscape, width: 1180, height: 820)
+        XCTAssertEqual(padLandscape.horizontal, .regular)
+        XCTAssertEqual(padLandscape.vertical, .regular)
+
+        // iPhone portrait: compact/regular
+        let phonePortrait = ResponsiveEvaluator.deriveSizeClasses(idiom: .phone, orientation: .portrait, width: 430, height: 932)
+        XCTAssertEqual(phonePortrait.horizontal, .compact)
+        XCTAssertEqual(phonePortrait.vertical, .regular)
+
+        // Small iPhone landscape: compact/compact
+        let smallLandscape = ResponsiveEvaluator.deriveSizeClasses(idiom: .phone, orientation: .landscape, width: 852, height: 393)
+        XCTAssertEqual(smallLandscape.horizontal, .compact)
+        XCTAssertEqual(smallLandscape.vertical, .compact)
+
+        // Max-class iPhone landscape: regular/compact
+        let maxLandscape = ResponsiveEvaluator.deriveSizeClasses(idiom: .phone, orientation: .landscape, width: 932, height: 430)
+        XCTAssertEqual(maxLandscape.horizontal, .regular)
+        XCTAssertEqual(maxLandscape.vertical, .compact)
+
+        // Unknown idiom: unspecified -> all size-class buckets fail-safe skip
+        let other = ResponsiveEvaluator.deriveSizeClasses(idiom: .other, orientation: .portrait, width: 800, height: 600)
+        XCTAssertEqual(other.horizontal, .unspecified)
+        XCTAssertEqual(other.vertical, .unspecified)
+    }
+
+    #if canImport(UIKit)
+    /// Smoke test for the size-class source decision (see ResponsiveRuntime).
+    ///
+    /// Empirical result on the simulator (iPad (A16), iOS 26.5): in the test
+    /// process, `UIScreen.main.traitCollection` returns `.unspecified` for
+    /// BOTH size classes — it is NOT a usable source outside a UIKit app's
+    /// own trait environment. That observation is why the runtime derives
+    /// size classes from idiom + orientation + window frame instead. This
+    /// test pins the two halves of that decision:
+    /// - the derivation always resolves (never .unspecified) on phone/pad;
+    /// - if a future host process DOES resolve screen traits, they must agree
+    ///   with the derivation table (guards the table against drift).
+    func testScreenTraitCollectionSmoke() throws {
+        let idiom: DeviceIdiom
+        switch UIDevice.current.userInterfaceIdiom {
+        case .phone: idiom = .phone
+        case .pad: idiom = .pad
+        default: throw XCTSkip("size-class table only modeled for phone/pad idioms")
+        }
+
+        let bounds = UIScreen.main.bounds
+        let orientation = ResponsiveEvaluator.deriveOrientation(
+            width: Double(bounds.width),
+            height: Double(bounds.height)
+        )
+        let derived = ResponsiveEvaluator.deriveSizeClasses(
+            idiom: idiom,
+            orientation: orientation,
+            width: Double(bounds.width),
+            height: Double(bounds.height)
+        )
+
+        // The derivation must always resolve on phone/pad idioms — this is
+        // what makes named-bucket gating usable at all from the runner process.
+        XCTAssertNotEqual(derived.horizontal, .unspecified)
+        XCTAssertNotEqual(derived.vertical, .unspecified)
+
+        // Where the process's screen traits DO resolve, they must agree with
+        // the derivation table. (Observed .unspecified in the SwiftPM test
+        // host — the cross-check is then vacuous, which is itself the
+        // documented justification for not using UIScreen as the source.)
+        func toValue(_ sizeClass: UIUserInterfaceSizeClass) -> SizeClassValue? {
+            switch sizeClass {
+            case .compact: return .compact
+            case .regular: return .regular
+            default: return nil
+            }
+        }
+        let traits = UIScreen.main.traitCollection
+        if let horizontal = toValue(traits.horizontalSizeClass) {
+            XCTAssertEqual(derived.horizontal, horizontal)
+        }
+        if let vertical = toValue(traits.verticalSizeClass) {
+            XCTAssertEqual(derived.vertical, vertical)
+        }
+    }
+    #endif
+
+    // MARK: - Results skipReason emission
+
+    func testResultsWriterEmitsSkipReason() throws {
+        let run = TestRunResult(
+            testName: "Suite",
+            caseResults: [
+                TestCaseResult(name: "platform gated", passed: true, duration: 0, skipped: true, skipReason: .platform),
+                TestCaseResult(name: "responsive gated", passed: true, duration: 0, skipped: true, skipReason: .responsive),
+                TestCaseResult(name: "plain skip", passed: true, duration: 0, skipped: true),
+                TestCaseResult(name: "ran", passed: true, duration: 0.5)
+            ],
+            totalDuration: 0.5
+        )
+
+        let payload = ResultsWriter.resultsJSON([run], platform: "ios")
+        let suites = payload["suites"] as? [[String: Any]]
+        let results = suites?.first?["results"] as? [[String: Any]]
+        XCTAssertEqual(results?.count, 4)
+
+        XCTAssertEqual(results?[0]["status"] as? String, "skipped")
+        XCTAssertEqual(results?[0]["skipReason"] as? String, "platform")
+        XCTAssertEqual(results?[1]["status"] as? String, "skipped")
+        XCTAssertEqual(results?[1]["skipReason"] as? String, "responsive")
+        // Plain `skip: true` carries no reason
+        XCTAssertEqual(results?[2]["status"] as? String, "skipped")
+        XCTAssertNil(results?[2]["skipReason"])
+        XCTAssertEqual(results?[3]["status"] as? String, "passed")
+        XCTAssertNil(results?[3]["skipReason"])
     }
 
     func testArgsSubstitutionFlowOverridesScreenDefaults() throws {

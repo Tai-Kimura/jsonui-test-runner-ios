@@ -269,13 +269,17 @@ extension TestLoader {
             description: testCase.description,
             skip: testCase.skip,
             platform: testCase.platform,
+            responsive: testCase.responsive,
             initialState: testCase.initialState,
             steps: substitutedSteps,
             args: testCase.args
         )
     }
 
-    /// Substitute @{varName} placeholders in a TestStep
+    /// Substitute @{varName} placeholders in a TestStep, preserving ALL other
+    /// fields (dropping e.g. `when` here would silently disable a step's
+    /// platform/responsive gate on args-substituted referenced cases).
+    /// Nested control-step `steps` are substituted recursively.
     private func substituteArgs(in step: TestStep, args: [String: Any]) -> TestStep {
         return TestStep(
             action: step.action,
@@ -295,7 +299,23 @@ extension TestLoader {
             amount: step.amount,
             button: substituteArgsInOptionalString(step.button, args: args),
             label: substituteArgsInOptionalString(step.label, args: args),
-            index: step.index
+            index: step.index,
+            optional: step.optional,
+            when: step.when,
+            retryTapIfNoChange: step.retryTapIfNoChange,
+            container: substituteArgsInOptionalString(step.container, args: args),
+            variable: step.variable,
+            times: step.times,
+            while: step.while,
+            steps: step.steps?.map { substituteArgs(in: $0, args: args) },
+            maxRetries: step.maxRetries,
+            latitude: step.latitude,
+            longitude: step.longitude,
+            paths: step.paths,
+            cropId: substituteArgsInOptionalString(step.cropId, args: args),
+            threshold: step.threshold,
+            mocks: step.mocks,
+            orientation: step.orientation
         )
     }
 

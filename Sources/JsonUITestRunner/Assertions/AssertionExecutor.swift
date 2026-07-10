@@ -128,7 +128,21 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     // MARK: - Condition evaluation (for `when` / `while`)
 
     public func evaluate(condition: WhenCondition, platform: String, in app: XCUIApplication) throws -> Bool {
+        // Fail-safe skip: a condition carrying keys this driver cannot evaluate
+        // (written against a newer schema than this driver) is UNMET — the
+        // gated step is skipped, never run-anyway on the keys we do know,
+        // never a hard error.
+        if !condition.unknownKeys.isEmpty {
+            print("Warning: condition contains unevaluable key(s) \(condition.unknownKeys) on the iOS driver; treating as unmet (step skipped)")
+            return false
+        }
         if let target = condition.platform, !target.includes(platform) {
+            return false
+        }
+        // Size gate resolved against the live device/window size. Named
+        // buckets mirror the sjui renderer's size-class rules; constraint
+        // objects compare the window frame in pt (see ResponsiveEvaluator).
+        if let responsive = condition.responsive, !ResponsiveRuntime.matches(responsive, app: app) {
             return false
         }
         if let visibleId = condition.visible, !isInstantlyVisible(id: visibleId, in: app) {
@@ -500,7 +514,8 @@ extension FlowTestStep {
             paths: paths,
             cropId: cropId,
             threshold: threshold,
-            mocks: mocks
+            mocks: mocks,
+            orientation: orientation
         )
     }
 }

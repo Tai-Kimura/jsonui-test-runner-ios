@@ -20,6 +20,13 @@ public struct TestRunnerConfig {
     public init() {}
 }
 
+/// Why a skipped result was skipped; only set for gate-caused skips
+/// (results.schema.json skipReason). Plain `skip: true` skips carry no reason.
+public enum SkipReason: String {
+    case platform
+    case responsive
+}
+
 /// Result of a single test case execution
 public struct TestCaseResult {
     public let name: String
@@ -27,8 +34,10 @@ public struct TestCaseResult {
     public let duration: TimeInterval
     public let error: Error?
     public let screenshots: [XCTAttachment]
-    /// True when the case was skipped (skip flag or platform mismatch)
+    /// True when the case was skipped (skip flag, platform or responsive mismatch)
     public let skipped: Bool
+    /// Why the case was skipped (platform vs responsive gate); nil for plain `skip: true` skips
+    public let skipReason: SkipReason?
     /// Warnings collected during the case (optional-step failures, baseline created, ...)
     public let warnings: [String]
 
@@ -39,6 +48,7 @@ public struct TestCaseResult {
         error: Error? = nil,
         screenshots: [XCTAttachment] = [],
         skipped: Bool = false,
+        skipReason: SkipReason? = nil,
         warnings: [String] = []
     ) {
         self.name = name
@@ -47,6 +57,7 @@ public struct TestCaseResult {
         self.error = error
         self.screenshots = screenshots
         self.skipped = skipped
+        self.skipReason = skipReason
         self.warnings = warnings
     }
 }
@@ -153,6 +164,22 @@ public class JsonUITestRunner {
         let startTime = Date()
         var caseResults: [TestCaseResult] = []
 
+        // Test-level platform gate: emit one skipped row PER CASE (never an
+        // empty caseResults) so a file-level skip stays visible in the report
+        // — the plan's "no silent truncation" rule.
+        if let platform = screenTest.platform, !platform.includes(config.platform) {
+            let skippedRows = screenTest.cases.map {
+                TestCaseResult(name: $0.name, passed: true, duration: 0, skipped: true, skipReason: .platform)
+            }
+            let result = TestRunResult(
+                testName: screenTest.metadata.name,
+                caseResults: skippedRows,
+                totalDuration: Date().timeIntervalSince(startTime)
+            )
+            writeResultsIfNeeded(result)
+            return result
+        }
+
         // Apply the file-level mock scenario set BEFORE the app (re)launches, so the
         // screen fetches under the selected scenarios. Scenario switching is per-file
         // for screen tests; there is no per-case re-open (see plan §8.1).
@@ -195,9 +222,20 @@ public class JsonUITestRunner {
                 continue
             }
 
-            // Check platform filter
+            // Check platform filter. Deterministic skip-reason rule: platform
+            // is evaluated BEFORE responsive, so when a case carries both
+            // gates and both are unmet, skipReason is "platform" (the static
+            // gate wins over the size-dependent one, keeping reports stable
+            // across device sizes).
             if let platform = testCase.platform, !platform.includes(config.platform) {
-                caseResults.append(TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true))
+                caseResults.append(TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true, skipReason: .platform))
+                continue
+            }
+
+            // Case-level responsive gate, evaluated against the live
+            // device/window size (parallel to the platform gate).
+            if let responsive = testCase.responsive, !ResponsiveRuntime.matches(responsive, app: app) {
+                caseResults.append(TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true, skipReason: .responsive))
                 continue
             }
 
@@ -281,13 +319,19 @@ public class JsonUITestRunner {
     public func run(flowTest: FlowTest) -> TestRunResult {
         let startTime = Date()
 
-        // Check platform filter
+        // Flow-level platform gate: emit one skipped row (never an empty
+        // caseResults, which made the flow vanish from the report) — the
+        // plan's "no silent truncation" rule.
         if let platform = flowTest.platform, !platform.includes(config.platform) {
-            return TestRunResult(
+            let result = TestRunResult(
                 testName: flowTest.metadata.name,
-                caseResults: [],
+                caseResults: [
+                    TestCaseResult(name: flowTest.metadata.name, passed: true, duration: 0, skipped: true, skipReason: .platform)
+                ],
                 totalDuration: 0
             )
+            writeResultsIfNeeded(result)
+            return result
         }
 
         // Apply launch configuration (relaunches the app) before running
@@ -552,6 +596,13 @@ public class JsonUITestRunner {
                 continue
             }
 
+            // Case-level responsive gate, evaluated against the live
+            // device/window size — unmet means the referenced case is skipped
+            // (parallel to the platform filter above)
+            if let responsive = testCase.responsive, !ResponsiveRuntime.matches(responsive, app: app) {
+                continue
+            }
+
             try executeSteps(testCase.steps, warnings: &warnings)
         }
     }
@@ -578,6 +629,7 @@ public class JsonUITestRunner {
             description: testCase.description,
             skip: testCase.skip,
             platform: testCase.platform,
+            responsive: testCase.responsive,
             initialState: testCase.initialState,
             steps: substitutedSteps,
             args: testCase.args
@@ -620,7 +672,8 @@ public class JsonUITestRunner {
             paths: step.paths,
             cropId: substituteArgsInOptionalString(step.cropId, args: args),
             threshold: step.threshold,
-            mocks: step.mocks
+            mocks: step.mocks,
+            orientation: step.orientation
         )
     }
 
