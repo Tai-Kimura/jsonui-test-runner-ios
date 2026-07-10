@@ -63,6 +63,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeLongPress(step: step, in: app)
         case "input":
             try executeInput(step: step, in: app)
+        case "typeText":
+            try executeTypeText(step: step, in: app)
         case "clear":
             try executeClear(step: step, in: app)
         case "scroll":
@@ -189,6 +191,19 @@ public class XCUITestActionExecutor: ActionExecutor {
             element.typeText(deleteString)
         }
         element.typeText(value)
+    }
+
+    /// Type into whatever currently holds keyboard focus — no element id.
+    /// For fields that are focused but not directly targetable (e.g. an
+    /// invisible code-entry TextField behind visible slots): focus is
+    /// established app-side (auto-focus or a prior tap on a visible container),
+    /// then this sends the characters via the keyboard. Requires the keyboard
+    /// to be up; XCUIApplication.typeText throws "no keyboard focus" otherwise.
+    private func executeTypeText(step: TestStep, in app: XCUIApplication) throws {
+        guard let value = step.value else {
+            throw ActionError.missingParameter(action: "typeText", parameter: "value")
+        }
+        app.typeText(value)
     }
 
     private func executeClear(step: TestStep, in app: XCUIApplication) throws {
