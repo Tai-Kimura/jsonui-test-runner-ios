@@ -69,6 +69,37 @@ final class JsonUITestRunnerTests: XCTestCase {
         XCTAssertEqual(flowTest.steps[1].assert, "visible")
     }
 
+    // Regression: test-flow-file-level-mocks-silently-ignored — FlowTest had no
+    // `mocks` field, so a file-level mocks map was dropped at decode and the
+    // runner never applied it. Pin the field so the map survives decoding.
+    func testFlowTestFileLevelMocksParsing() throws {
+        let json = """
+        {
+            "type": "flow",
+            "metadata": { "name": "Flow With Mocks" },
+            "mocks": { "listOrders": "real_id", "getOrder": "real_id" },
+            "steps": [ { "screen": "Home", "action": "tap", "id": "start_button" } ]
+        }
+        """.data(using: .utf8)!
+
+        let flowTest = try JSONDecoder().decode(FlowTest.self, from: json)
+        XCTAssertEqual(flowTest.mocks?["listOrders"], "real_id")
+        XCTAssertEqual(flowTest.mocks?["getOrder"], "real_id")
+    }
+
+    func testFlowTestAbsentMocksIsNil() throws {
+        let json = """
+        {
+            "type": "flow",
+            "metadata": { "name": "Flow No Mocks" },
+            "steps": [ { "screen": "Home", "action": "tap", "id": "start_button" } ]
+        }
+        """.data(using: .utf8)!
+
+        let flowTest = try JSONDecoder().decode(FlowTest.self, from: json)
+        XCTAssertNil(flowTest.mocks)
+    }
+
     func testTestStepParsing() throws {
         // Action step
         let actionJson = """

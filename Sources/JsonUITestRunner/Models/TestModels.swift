@@ -157,6 +157,10 @@ public struct FlowTest: Codable {
     public let platform: PlatformTarget?
     public let initialState: FlowInitialState?
     public let launch: LaunchConfig?
+    // File-level mock scenarios (operationId -> scenario) applied before the
+    // first launch, so startup fetches run under the selected scenarios.
+    // Parity with ScreenTest.mocks; step-level setMocks handles mid-flow switches.
+    public let mocks: [String: String]?
     public let setup: [FlowTestStep]?
     public let teardown: [FlowTestStep]?
     public let steps: [FlowTestStep]

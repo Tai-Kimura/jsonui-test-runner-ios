@@ -334,9 +334,31 @@ public class JsonUITestRunner {
             return result
         }
 
-        // Apply launch configuration (relaunches the app) before running
+        // Apply the file-level mock scenario set BEFORE the app (re)launches, so
+        // the flow starts under the selected scenarios. Parity with runScreenTest
+        // (§8.1); a failure here fails the flow rather than silently running the
+        // default scenario.
+        if let mocks = flowTest.mocks {
+            do {
+                try requireMockClient("mocks").scenarioSet(mocks)
+            } catch {
+                let result = TestRunResult(
+                    testName: flowTest.metadata.name,
+                    caseResults: [TestCaseResult(name: flowTest.metadata.name, passed: false, duration: 0, error: error)],
+                    totalDuration: Date().timeIntervalSince(startTime)
+                )
+                writeResultsIfNeeded(result)
+                return result
+            }
+        }
+
+        // Apply launch configuration (relaunches the app) before running. When
+        // mocks were set without a launch block, still relaunch so startup
+        // fetches run under the new scenarios.
         if let launch = flowTest.launch {
             applyLaunch(launch)
+        } else if flowTest.mocks != nil {
+            app.launch()
         }
 
         let caseResults = runFlowSteps(flowTest)
