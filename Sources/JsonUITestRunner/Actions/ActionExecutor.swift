@@ -552,6 +552,18 @@ public class XCUITestActionExecutor: ActionExecutor {
                 return
             }
 
+            // Keyboard-area system overlays (the "Use Strong Password?" sheet)
+            // render INSIDE the app's own tree, in a separate window of plain
+            // Other containers — never under alerts/sheets, and not owned by
+            // SpringBoard or any AutoFill remote process (probed empirically:
+            // Button identifier 'xmark', label '閉じる'). Sweep the app's
+            // buttons directly as the last per-iteration resort.
+            let appButton = app.buttons[buttonText]
+            if appButton.exists, appButton.isHittable {
+                appButton.tap()
+                return
+            }
+
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         } while Date() < deadline
 
