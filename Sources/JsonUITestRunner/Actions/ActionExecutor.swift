@@ -553,15 +553,31 @@ public class XCUITestActionExecutor: ActionExecutor {
             }
 
             // Keyboard-area system overlays (the "Use Strong Password?" sheet)
-            // render INSIDE the app's own tree, in a separate window of plain
-            // Other containers — never under alerts/sheets, and not owned by
-            // SpringBoard or any AutoFill remote process (probed empirically:
-            // Button identifier 'xmark', label '閉じる'). Sweep the app's
-            // buttons directly as the last per-iteration resort.
-            let appButton = app.buttons[buttonText]
-            if appButton.exists, appButton.isHittable {
-                appButton.tap()
-                return
+            // render INSIDE the app's own tree — a separate window over the
+            // keyboard area, never under alerts/sheets and not owned by
+            // SpringBoard (probed empirically). An UNCONDITIONAL app.buttons
+            // sweep by label is wrong (test-ios-alerttap-app-buttons-scan-hits-
+            // main-window-chrome): on overlay-free runs it taps a toolbar close
+            // whose SF-Symbol a11y label collides with buttonText, and even
+            // with the sheet up, the label's firstMatch is that top chrome
+            // button, not the sheet's X. Two probed facts make a robust target:
+            //   1. Gate on the sheet actually being present via its
+            //      GenerateStrongPasswordButton (stable, locale-independent id).
+            //   2. The sheet's close carries the system identifier 'xmark'; the
+            //      app's own toolbar close does NOT (a SwiftUI Image(systemName:
+            //      "xmark") button gets the '閉じる' LABEL, not that identifier),
+            //      so app.buttons["xmark"] resolves to the sheet's X — verified
+            //      at the bottom (keyboard) region, dismissing the sheet while
+            //      leaving the top chrome untouched. Subscript firstMatch (not
+            //      allElementsBoundByIndex) is resilient to the sheet's
+            //      transient snapshot.
+            if app.buttons["GenerateStrongPasswordButton"].exists {
+                sawAlert = true
+                let sheetClose = app.buttons["xmark"]
+                if sheetClose.exists, sheetClose.isHittable {
+                    sheetClose.tap()
+                    return
+                }
             }
 
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
