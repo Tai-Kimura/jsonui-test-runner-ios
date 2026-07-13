@@ -104,6 +104,12 @@ public class XCUITestActionExecutor: ActionExecutor {
             // the swept size must self-gate with a matching `when.responsive`
             // so they skip cleanly instead of running at the device's fixed size.
             print("Warning: 'setViewport' is a no-op on the iOS driver (device size is fixed); gate dependent asserts with when.responsive")
+        case "emitHook":
+            // Permanently web-only: emitHook drives a browser-side hook
+            // (window.__jsonuiTestHooks); there is no equivalent injection
+            // channel into a native app. Gate dependent steps/asserts with
+            // when.platform: web.
+            print("Warning: 'emitHook' is a no-op on the iOS driver (browser-side hooks do not exist); gate dependent steps with when.platform")
         case "setOrientation":
             try executeSetOrientation(step: step)
         case "addMedia":
