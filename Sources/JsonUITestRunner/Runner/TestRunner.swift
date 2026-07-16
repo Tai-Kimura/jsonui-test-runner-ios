@@ -92,6 +92,11 @@ public class JsonUITestRunner {
     private let mockClient: MockClient?
     /// Runtime variables (readText results), shared with the action executor
     private let variables = VariableStore()
+    /// Identity of the test file / case currently executing — embedded into
+    /// artifact attachment names so `jsonui-test artifacts pull` can organize
+    /// captures per test/case (parity with android/web `failure_<test>_<case>`).
+    private var currentTestName = ""
+    private var currentCaseName = ""
 
     public init(
         app: XCUIApplication,
@@ -100,7 +105,8 @@ public class JsonUITestRunner {
     ) {
         self.app = app
         self.config = config
-        self.actionExecutor = XCUITestActionExecutor(platform: config.platform, variables: variables)
+        let executor = XCUITestActionExecutor(platform: config.platform, variables: variables)
+        self.actionExecutor = executor
         self.assertionExecutor = XCUITestAssertionExecutor(
             stateProvider: stateProvider,
             defaultTimeout: config.defaultTimeout,
@@ -111,6 +117,27 @@ public class JsonUITestRunner {
             self.mockClient = MockClient(baseURL: url, token: token)
         } else {
             self.mockClient = nil
+        }
+        // Route `screenshot` action captures into the xcresult with test/case
+        // identity in the name — the artifacts extractor collects them from there.
+        executor.screenshotAttachmentHandler = { [weak self] name, screenshot in
+            guard let self = self else { return }
+            let attachment = XCTAttachment(screenshot: screenshot)
+            attachment.name = "Screenshot_\(self.currentTestName)_\(self.currentCaseName)_\(name)"
+            attachment.lifetime = .keepAlways
+            self.attachArtifact(attachment)
+        }
+    }
+
+    /// Attach an artifact into the running test's xcresult. Library code is not
+    /// an XCTestCase, but XCTContext.runActivity works from anywhere inside a
+    /// test's execution context, so attachments land in the xcresult without
+    /// requiring the consuming harness to call add() itself (verified on the
+    /// conformance host: exported by `xcresulttool export attachments` with the
+    /// attachment name preserved as the suggested human-readable name).
+    private func attachArtifact(_ attachment: XCTAttachment) {
+        XCTContext.runActivity(named: attachment.name ?? "JsonUI Artifact") { activity in
+            activity.add(attachment)
         }
     }
 
@@ -179,6 +206,11 @@ public class JsonUITestRunner {
             writeResultsIfNeeded(result)
             return result
         }
+
+        // Artifact identity for this file (setup/teardown captures carry the
+        // phase name until runTestCase overwrites the case name).
+        currentTestName = screenTest.metadata.name
+        currentCaseName = "setup"
 
         // Apply the file-level mock scenario set BEFORE the app (re)launches, so the
         // screen fetches under the selected scenarios. Scenario switching is per-file
@@ -259,6 +291,7 @@ public class JsonUITestRunner {
 
         // Teardown (guaranteed). A teardown failure is recorded as an extra failed result.
         if let teardownSteps = screenTest.teardown {
+            currentCaseName = "teardown"
             do {
                 var warnings: [String] = []
                 try executeSteps(teardownSteps, warnings: &warnings)
@@ -287,6 +320,7 @@ public class JsonUITestRunner {
         let startTime = Date()
         var screenshots: [XCTAttachment] = []
         var warnings: [String] = []
+        currentCaseName = testCase.name
 
         // Apply load-time args substitution if test case has args
         let processedCase: TestCase
@@ -304,9 +338,10 @@ public class JsonUITestRunner {
             if config.screenshotOnFailure {
                 let screenshot = app.screenshot()
                 let attachment = XCTAttachment(screenshot: screenshot)
-                attachment.name = "Failure_\(testCase.name)"
+                attachment.name = "Failure_\(currentTestName)_\(testCase.name)"
                 attachment.lifetime = .keepAlways
                 screenshots.append(attachment)
+                attachArtifact(attachment)
             }
             let duration = Date().timeIntervalSince(startTime)
             return TestCaseResult(name: testCase.name, passed: false, duration: duration, error: error, screenshots: screenshots, warnings: warnings)
@@ -382,6 +417,9 @@ public class JsonUITestRunner {
         var screenshots: [XCTAttachment] = []
         var warnings: [String] = []
         var currentStepIndex = 0
+        // A flow acts as a single case for artifact identity purposes.
+        currentTestName = flowTest.metadata.name
+        currentCaseName = flowTest.metadata.name
         var flowError: Error? = nil
 
         do {
@@ -403,9 +441,10 @@ public class JsonUITestRunner {
                         if checkpoint.screenshot == true {
                             let screenshot = app.screenshot()
                             let attachment = XCTAttachment(screenshot: screenshot)
-                            attachment.name = "Checkpoint_\(checkpoint.name)"
+                            attachment.name = "Checkpoint_\(currentTestName)_\(checkpoint.name)"
                             attachment.lifetime = .keepAlways
                             screenshots.append(attachment)
+                            attachArtifact(attachment)
                         }
                     }
                 }
@@ -415,9 +454,10 @@ public class JsonUITestRunner {
             if config.screenshotOnFailure {
                 let screenshot = app.screenshot()
                 let attachment = XCTAttachment(screenshot: screenshot)
-                attachment.name = "Failure_Step\(currentStepIndex)"
+                attachment.name = "Failure_\(currentTestName)_Step\(currentStepIndex)"
                 attachment.lifetime = .keepAlways
                 screenshots.append(attachment)
+                attachArtifact(attachment)
             }
         }
 

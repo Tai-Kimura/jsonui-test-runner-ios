@@ -43,6 +43,11 @@ public class XCUITestActionExecutor: ActionExecutor {
     private let platform: String
     /// Runtime variable store written by readText and read by the runner for @{name} substitution
     private let variables: VariableStore
+    /// Optional sink for `screenshot` action captures. The runner wires this to
+    /// attach the capture into the xcresult (named with test/case identity) so
+    /// `jsonui-test artifacts pull` can collect it; the temp-dir PNG write in
+    /// executeScreenshot is kept for backward compatibility.
+    public var screenshotAttachmentHandler: ((String, XCUIScreenshot) -> Void)?
 
     public init(platform: String = "ios", variables: VariableStore = VariableStore()) {
         self.platform = platform
@@ -513,6 +518,10 @@ public class XCUITestActionExecutor: ActionExecutor {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(name).png")
         try screenshot.pngRepresentation.write(to: url)
+
+        // Also hand the capture to the runner so it lands in the xcresult
+        // (collected later by `jsonui-test artifacts pull`).
+        screenshotAttachmentHandler?(name, screenshot)
     }
 
     private func executeAlertTap(step: TestStep, in app: XCUIApplication) throws {
