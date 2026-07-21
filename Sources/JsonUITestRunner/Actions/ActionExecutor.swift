@@ -466,18 +466,84 @@ public class XCUITestActionExecutor: ActionExecutor {
         coordinate.press(forDuration: 0.1, thenDragTo: targetCoordinate)
     }
 
+    /// A keyboard element can EXIST while not being on screen at all: after
+    /// an iPad dismiss (or with a hardware keyboard attached) the tree keeps
+    /// a phantom keyboard whose frames sit below the screen bounds (measured:
+    /// every key ~350pt past the bottom edge, all non-hittable). Existence is
+    /// therefore the wrong signal for "keyboard is up" — intersect the
+    /// keyboard frame with the app frame instead.
+    private func keyboardIsVisible(in app: XCUIApplication) -> Bool {
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.exists else { return false }
+        let frame = keyboard.frame
+        guard !frame.isEmpty else { return false }
+        return app.frame.intersects(frame)
+    }
+
+    /// Polls until the keyboard leaves the screen (or the timeout lapses).
+    /// Dismissal is judged by visibility, not existence — a phantom keyboard
+    /// element may outlive the on-screen keyboard indefinitely.
+    private func waitForKeyboardDismiss(in app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if !keyboardIsVisible(in: app) { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        } while Date() < deadline
+        return !keyboardIsVisible(in: app)
+    }
+
     private func executeHideKeyboard(in app: XCUIApplication) throws {
-        // No-op when no keyboard is up — the action is a precondition
-        // normalizer, not an assertion.
-        guard app.keyboards.firstMatch.exists else { return }
+        // No-op when no keyboard is on screen — the action is a precondition
+        // normalizer, not an assertion. (Existence alone is not enough; see
+        // keyboardIsVisible.)
+        guard keyboardIsVisible(in: app) else { return }
 
         // 1. An explicit dismiss key when the keyboard has one (iPad).
-        for identifier in ["Hide keyboard", "Dismiss", "キーボードを非表示"] {
-            let key = app.keyboards.firstMatch.buttons[identifier]
-            if key.exists, key.isHittable {
+        //
+        //    iPad keyboard keys are UIAccessibilityElementKBKey elements;
+        //    XCTest computes Button from legacy attributes vs Key from the
+        //    modern attribute ("Automation type mismatch" runtime issue) and
+        //    isHittable resolves to false for EVERY key — dismiss included —
+        //    even though the key is visible and its frame is valid (measured
+        //    on iPad Pro 13-inch / iOS 26.4, text keyboard and number pad).
+        //    So existence gates the attempt and a frame-center coordinate tap
+        //    replaces the element tap whenever hittability is broken.
+        //
+        //    The dismiss key's identifier is EMPTY — the subscript matches by
+        //    label, which is locale-dependent. After the known labels, fall
+        //    back to the keyboard's LAST button: on every measured iPad
+        //    layout the dismiss key sits bottom-right = last in index order.
+        //    The fallback is pad-only — iPhone keyboards have no dismiss key,
+        //    so tapping their last button would just type something; the
+        //    keyboard-gone check below keeps a wrong tap from reading as
+        //    success either way.
+        let keyboard = app.keyboards.firstMatch
+        var dismissCandidates: [XCUIElement] = ["Hide keyboard", "Dismiss", "キーボードを非表示"].map {
+            keyboard.buttons[$0]
+        }
+        if UIDevice.current.userInterfaceIdiom == .pad,
+           let lastKey = keyboard.buttons.allElementsBoundByIndex.last {
+            dismissCandidates.append(lastKey)
+        }
+        let appFrame = app.frame
+        for key in dismissCandidates {
+            guard key.exists else { continue }
+            if key.isHittable {
                 key.tap()
-                if !app.keyboards.firstMatch.waitForExistence(timeout: 0.5) { return }
+            } else if appFrame.contains(CGPoint(x: key.frame.midX, y: key.frame.midY)) {
+                key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            } else {
+                // The key's reported frame can be OFF-SCREEN garbage — the
+                // keyboard tree sometimes keeps its pre-slide-in animation
+                // frames (measured: every key ~350pt below the visible
+                // keyboard, which is also why isHittable is false). No
+                // element frame is trustworthy then, so tap the dismiss
+                // key's invariant SCREEN position instead: bottom-right of
+                // the app window (measured center ≈ (0.93, 0.96) on a
+                // docked iPad keyboard).
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.96)).tap()
             }
+            if waitForKeyboardDismiss(in: app, timeout: 0.5) { return }
         }
 
         // 2. An input-accessory toolbar Done (SwiftJsonUI `doneText`).
@@ -485,7 +551,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             let button = app.toolbars.buttons[label]
             if button.exists, button.isHittable {
                 button.tap()
-                if !app.keyboards.firstMatch.waitForExistence(timeout: 0.5) { return }
+                if waitForKeyboardDismiss(in: app, timeout: 0.5) { return }
             }
         }
 
@@ -497,7 +563,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98))
         start.press(forDuration: 0.05, thenDragTo: end)
 
-        if app.keyboards.firstMatch.waitForExistence(timeout: 1.0) {
+        if !waitForKeyboardDismiss(in: app, timeout: 1.0) {
             throw ActionError.actionFailed(
                 action: "hideKeyboard",
                 reason: "Keyboard still visible after dismiss key / accessory Done / interactive scroll-dismiss attempts"
