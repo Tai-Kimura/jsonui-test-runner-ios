@@ -294,41 +294,67 @@ public class XCUITestActionExecutor: ActionExecutor {
             scroller = app
         }
 
-        let deadline = Date().addingTimeInterval(timeout)
-        var previousSnapshot = ""
-        var unchangedCount = 0
+        // `direction` is the FIRST direction to search, not a constraint: when
+        // the primary sweep reaches the end of content without a hit, the
+        // search continues in the OPPOSITE direction to the other end. The
+        // target can legitimately sit on the far side of the starting offset
+        // (measured on a tablet 2-column page: a tall section left partially
+        // visible at the viewport top made an "scroll up until visible" reset
+        // step a correct no-op, and a down-only search then ran to the bottom
+        // while the target sat just above the viewport).
+        func searchLeg(_ legDirection: String, deadline: Date) throws -> Bool {
+            var previousSnapshot = ""
+            var unchangedCount = 0
 
-        while Date() < deadline {
-            switch direction {
-            case "up": scroller.swipeDown()
-            case "down": scroller.swipeUp()
-            case "left": scroller.swipeRight()
-            case "right": scroller.swipeLeft()
-            default:
-                throw ActionError.actionFailed(action: "scrollUntilVisible", reason: "Invalid direction: \(direction)")
-            }
-
-            if targetVisible() {
-                return
-            }
-
-            // End-reached detection: two consecutive scrolls with no hierarchy change
-            let snapshot = app.debugDescription
-            if snapshot == previousSnapshot {
-                unchangedCount += 1
-                if unchangedCount >= 1 {
-                    throw ActionError.actionFailed(
-                        action: "scrollUntilVisible",
-                        reason: "Element '\(id)' not found after scrolling to the end"
-                    )
+            while Date() < deadline {
+                switch legDirection {
+                case "up": scroller.swipeDown()
+                case "down": scroller.swipeUp()
+                case "left": scroller.swipeRight()
+                case "right": scroller.swipeLeft()
+                default:
+                    throw ActionError.actionFailed(action: "scrollUntilVisible", reason: "Invalid direction: \(legDirection)")
                 }
-            } else {
-                unchangedCount = 0
+
+                if targetVisible() {
+                    return true
+                }
+
+                // End-reached detection: two consecutive scrolls with no hierarchy change
+                let snapshot = app.debugDescription
+                if snapshot == previousSnapshot {
+                    unchangedCount += 1
+                    if unchangedCount >= 1 {
+                        return false
+                    }
+                } else {
+                    unchangedCount = 0
+                }
+                previousSnapshot = snapshot
             }
-            previousSnapshot = snapshot
+            return targetVisible()
         }
 
-        throw ActionError.timeout(id: id, timeout: Int(timeout * 1000))
+        if try searchLeg(direction, deadline: Date().addingTimeInterval(timeout)) {
+            return
+        }
+        // Reverse leg: grant it a real budget even when the primary leg burned
+        // the step timeout (bounded: at most one extra half-timeout).
+        let reverse: String
+        switch direction {
+        case "down": reverse = "up"
+        case "up": reverse = "down"
+        case "left": reverse = "right"
+        case "right": reverse = "left"
+        default: reverse = "up"
+        }
+        if try searchLeg(reverse, deadline: Date().addingTimeInterval(max(timeout / 2, 6.0))) {
+            return
+        }
+        throw ActionError.actionFailed(
+            action: "scrollUntilVisible",
+            reason: "Element '\(id)' not found after scrolling to both ends"
+        )
     }
 
     private func executeReadText(step: TestStep, in app: XCUIApplication) throws {
