@@ -545,4 +545,48 @@ final class JsonUITestRunnerTests: XCTestCase {
 
         XCTAssertEqual(substituted.steps[0].equals?.stringValue, "Hi bob")
     }
+
+    // MARK: - addMedia helpers
+
+    func testMediaResourceTypeMatrix() {
+        // Same matrix as the Android driver: png/jpg/jpeg/gif photo, mp4 video.
+        XCTAssertEqual(XCUITestActionExecutor.mediaResourceType(forExtension: "png"), .photo)
+        XCTAssertEqual(XCUITestActionExecutor.mediaResourceType(forExtension: "JPG"), .photo)
+        XCTAssertEqual(XCUITestActionExecutor.mediaResourceType(forExtension: "jpeg"), .photo)
+        XCTAssertEqual(XCUITestActionExecutor.mediaResourceType(forExtension: "gif"), .photo)
+        XCTAssertEqual(XCUITestActionExecutor.mediaResourceType(forExtension: "mp4"), .video)
+        XCTAssertNil(XCUITestActionExecutor.mediaResourceType(forExtension: "pdf"))
+        XCTAssertNil(XCUITestActionExecutor.mediaResourceType(forExtension: ""))
+    }
+
+    func testResolveMediaURLFlattensToBasename() throws {
+        // A directory acts as a resource bundle root; media installed by the
+        // CLI is flattened there, so "fixtures/red.png" must fall back to
+        // the basename "red.png" at the bundle root.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("media-resolve-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("red.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: file)
+        guard let bundle = Bundle(url: dir) else {
+            return XCTFail("could not open temp dir as a bundle")
+        }
+
+        let executor = XCUITestActionExecutor()
+        XCTAssertEqual(try executor.resolveMediaURL(path: "red.png", bundle: bundle).lastPathComponent, "red.png")
+        XCTAssertEqual(try executor.resolveMediaURL(path: "fixtures/red.png", bundle: bundle).lastPathComponent, "red.png")
+        XCTAssertEqual(try executor.resolveMediaURL(path: file.path, bundle: bundle).path, file.path)
+        XCTAssertThrowsError(try executor.resolveMediaURL(path: "missing.png", bundle: bundle))
+        XCTAssertThrowsError(try executor.resolveMediaURL(path: "/nonexistent/abs.png", bundle: bundle))
+
+        // media/ subdir (CLI install layout under a preserved folder reference)
+        let mediaDir = dir.appendingPathComponent("media", isDirectory: true)
+        try FileManager.default.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+        try Data([0x47, 0x49, 0x46]).write(to: mediaDir.appendingPathComponent("anim.gif"))
+        XCTAssertEqual(
+            try executor.resolveMediaURL(path: "anim.gif", bundle: bundle).path,
+            mediaDir.appendingPathComponent("anim.gif").path
+        )
+    }
 }

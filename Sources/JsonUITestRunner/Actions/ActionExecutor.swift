@@ -2,6 +2,9 @@ import XCTest
 #if canImport(CoreLocation)
 import CoreLocation
 #endif
+#if canImport(Photos)
+import Photos
+#endif
 
 /// Protocol for executing test actions
 public protocol ActionExecutor {
@@ -48,6 +51,10 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// `jsonui-test artifacts pull` can collect it; the temp-dir PNG write in
     /// executeScreenshot is kept for backward compatibility.
     public var screenshotAttachmentHandler: ((String, XCUIScreenshot) -> Void)?
+    /// Bundle used to resolve relative `addMedia` paths (the flattened test
+    /// bundle). Defaults to the bundle this driver is compiled into, which is
+    /// the consuming UITest bundle for both vendored-source and SPM setups.
+    public var mediaBundle: Bundle?
 
     public init(platform: String = "ios", variables: VariableStore = VariableStore()) {
         self.platform = platform
@@ -118,7 +125,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         case "setOrientation":
             try executeSetOrientation(step: step)
         case "addMedia":
-            throw ActionError.actionFailed(action: "addMedia", reason: "addMedia is not supported on the iOS driver")
+            try executeAddMedia(step: step, in: app)
         case "repeat", "retry":
             throw ActionError.actionFailed(action: action, reason: "'\(action)' is a control step handled by the test runner")
         default:
@@ -1083,5 +1090,149 @@ public class XCUITestActionExecutor: ActionExecutor {
         // Create coordinate and tap
         let coordinate = element.coordinate(withNormalizedOffset: CGVector(dx: centerRatio, dy: 0.5))
         coordinate.tap()
+    }
+
+    // MARK: - addMedia (photo library seeding, simulator only)
+
+    /// Seed media fixtures into the simulator's photo library — the iOS
+    /// equivalent of the Android driver's MediaStore insert. Runs mid-flow
+    /// from the runner process via PhotoKit (addOnly access). Simulator only:
+    /// on a physical device the seeded assets would remain in the user's real
+    /// photo library irreversibly.
+    private func executeAddMedia(step: TestStep, in app: XCUIApplication) throws {
+        guard let paths = step.paths, !paths.isEmpty else {
+            throw ActionError.missingParameter(action: "addMedia", parameter: "paths")
+        }
+        #if targetEnvironment(simulator)
+        try ensurePhotoAddAuthorization()
+        let bundle = mediaBundle ?? Bundle(for: XCUITestActionExecutor.self)
+        for path in paths {
+            let url = try resolveMediaURL(path: path, bundle: bundle)
+            guard let type = Self.mediaResourceType(forExtension: url.pathExtension) else {
+                throw ActionError.actionFailed(action: "addMedia", reason: "unsupported file type: \(url.lastPathComponent)")
+            }
+            try addAsset(at: url, type: type)
+        }
+        #else
+        throw ActionError.actionFailed(
+            action: "addMedia",
+            reason: "addMedia is simulator-only on iOS: seeded fixtures would stay in a real device's photo library")
+        #endif
+    }
+
+    /// png/jpg/jpeg/gif seed as photos, mp4 as video — the same matrix as the
+    /// Android driver; anything else is rejected.
+    static func mediaResourceType(forExtension ext: String) -> PHAssetResourceType? {
+        switch ext.lowercased() {
+        case "png", "jpg", "jpeg", "gif": return .photo
+        case "mp4": return .video
+        default: return nil
+        }
+    }
+
+    /// Resolve a media fixture path: absolute paths pass through; relative
+    /// paths are looked up in the test bundle — as given first, then flattened
+    /// to the basename (the CLI install flattens media into the bundle root,
+    /// so basenames are the recommended form in test files).
+    func resolveMediaURL(path: String, bundle: Bundle) throws -> URL {
+        let fm = FileManager.default
+        if path.hasPrefix("/") {
+            guard fm.fileExists(atPath: path) else {
+                throw ActionError.actionFailed(action: "addMedia", reason: "file not found: \(path)")
+            }
+            return URL(fileURLWithPath: path)
+        }
+        if let resourceURL = bundle.resourceURL {
+            let basename = (path as NSString).lastPathComponent
+            // As given → flattened basename (synchronized groups flatten into
+            // the bundle root) → media/<basename> (the CLI installs media into
+            // a media/ subdir, which folder references preserve).
+            let candidates = [path, basename, "media/\(basename)"]
+            for candidate in candidates {
+                let url = resourceURL.appendingPathComponent(candidate)
+                if fm.fileExists(atPath: url.path) {
+                    return url
+                }
+            }
+        }
+        throw ActionError.actionFailed(action: "addMedia", reason: "file not found in test bundle: \(path)")
+    }
+
+    /// addOnly access, pre-granted by the CLI via `simctl privacy grant
+    /// photos-add <uitest-bundle-id>.xctrunner` (the primary path — no alert
+    /// appears). If the pre-grant did not run, fall back to requesting
+    /// authorization and tapping the system alert.
+    private func ensurePhotoAddAuthorization() throws {
+        var status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+        if status == .notDetermined {
+            // Fire the request FIRST, then poll SpringBoard for the alert —
+            // awaiting the completion before tapping would deadlock behind
+            // the prompt.
+            let sema = DispatchSemaphore(value: 0)
+            var resolved: PHAuthorizationStatus = .notDetermined
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { s in
+                resolved = s
+                sema.signal()
+            }
+            tapPhotoPermissionAlert()
+            if sema.wait(timeout: .now() + 15) != .timedOut {
+                status = resolved
+            }
+        }
+        guard status == .authorized || status == .limited else {
+            throw ActionError.actionFailed(
+                action: "addMedia",
+                reason: "photo library add access is not authorized (status \(status.rawValue)) — pre-grant it with: xcrun simctl privacy <udid> grant photos-add <uitest-bundle-id>.xctrunner")
+        }
+    }
+
+    /// Grant labels (en/ja) on the photos permission alert. iOS 18 shows the
+    /// full-access dialog even for an addOnly request — probed 2026-07-24:
+    /// アクセスを制限… / フルアクセスを許可 / 許可しない, no "Add Photos Only"
+    /// button. Pre-grant is the primary path; this tap is robustness only.
+    private static let photoAlertGrantLabels = [
+        "Add Photos Only", "写真のみ追加",
+        "Allow Full Access", "フルアクセスを許可",
+        "Allow Access to All Photos", "すべての写真へのアクセスを許可",
+        "Allow", "許可", "OK",
+    ]
+
+    private func tapPhotoPermissionAlert() {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let alert = springboard.alerts.firstMatch
+            if alert.exists {
+                for label in Self.photoAlertGrantLabels where alert.buttons[label].exists {
+                    alert.buttons[label].tap()
+                    return
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+    }
+
+    /// Commit one asset and wait for the library commit (probed 12–87ms per
+    /// asset; the timeout is a hang guard). Note: with addOnly access the
+    /// runner cannot fetch assets back, so there is no post-commit
+    /// verification here — asserts belong in the picker UI / app state.
+    private func addAsset(at url: URL, type: PHAssetResourceType) throws {
+        let sema = DispatchSemaphore(value: 0)
+        var failure: String?
+        PHPhotoLibrary.shared().performChanges({
+            let request = PHAssetCreationRequest.forAsset()
+            request.addResource(with: type, fileURL: url, options: nil)
+        }, completionHandler: { success, error in
+            if !success {
+                failure = error.map { "\($0)" } ?? "unknown error"
+            }
+            sema.signal()
+        })
+        if sema.wait(timeout: .now() + 30) == .timedOut {
+            throw ActionError.actionFailed(action: "addMedia", reason: "photo library commit timed out for \(url.lastPathComponent)")
+        }
+        if let failure = failure {
+            throw ActionError.actionFailed(action: "addMedia", reason: "could not add \(url.lastPathComponent): \(failure)")
+        }
     }
 }

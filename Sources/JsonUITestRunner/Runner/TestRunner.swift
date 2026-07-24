@@ -16,6 +16,10 @@ public struct TestRunnerConfig {
     public var mockServerURL: URL? = nil
     /// Admin token printed by `jsonui-test mock serve`. Required with mockServerURL.
     public var mockToken: String? = nil
+    /// Bundle that carries `addMedia` fixtures (flattened into its root by the
+    /// CLI install). Defaults to the bundle the test JSON was loaded from in
+    /// runJsonUITest(resourceName:bundle:), else the driver's own bundle.
+    public var mediaBundle: Bundle? = nil
 
     public init() {}
 }
@@ -106,6 +110,7 @@ public class JsonUITestRunner {
         self.app = app
         self.config = config
         let executor = XCUITestActionExecutor(platform: config.platform, variables: variables)
+        executor.mediaBundle = config.mediaBundle
         self.actionExecutor = executor
         self.assertionExecutor = XCUITestAssertionExecutor(
             stateProvider: stateProvider,
@@ -860,6 +865,12 @@ extension XCTestCase {
         let loader = TestLoader()
         let loadedTest = try loader.loadFromBundle(name: resourceName, bundle: bundle)
 
+        // Media fixtures ship in the same bundle as the test JSON unless the
+        // harness points elsewhere explicitly.
+        var config = config
+        if config.mediaBundle == nil {
+            config.mediaBundle = bundle
+        }
         let runner = JsonUITestRunner(app: app, config: config)
 
         switch loadedTest {
