@@ -13,10 +13,11 @@ enum ScreenMarker {
 
     /// Turns a failed screen assertion into one of the canonical failure
     /// classes, so the message says what went wrong rather than just "not
-    /// found". The distinction matters: a missing marker anywhere is stale
-    /// generated code or a stale library pin (an infrastructure problem),
+    /// found". The class names the likely CAUSE, not a severity — every one
+    /// of them fails the assertion just the same. A missing marker anywhere
+    /// points at the build (stale generated code or a stale library pin),
     /// while the previous screen's marker still being the only one present
-    /// means the navigation genuinely did not happen (a test failure).
+    /// points at the app or the test: the navigation did not happen.
     static func diagnosis(screenId: String, in app: XCUIApplication) -> String {
         let target = app.descendants(matching: .any)
             .matching(identifier: identifier(for: screenId)).firstMatch
