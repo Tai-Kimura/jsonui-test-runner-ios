@@ -8,10 +8,13 @@ public struct TestRunnerConfig {
     public var defaultTimeout: TimeInterval = 5.0
     /// Verify the screen marker automatically whenever a flow's inline step
     /// moves to a different `screen`, without the test spelling an
-    /// assertion. Requires the app to be built with a library new enough to
-    /// emit markers, so it stays opt-in until a project has rebuilt; the
-    /// canonical end state is on-by-default.
-    public var verifyScreenTransitions: Bool = false
+    /// assertion. ON by default — this is the canonical behaviour.
+    ///
+    /// An app whose generated code predates screen markers will fail every
+    /// screen change with `marker-absent`. That is the intended signal: the
+    /// app needs `jui build` and a current library pin. Set this to false to
+    /// opt out while migrating.
+    public var verifyScreenTransitions: Bool = true
     /// Timeout for those implicit verifications. Deliberately larger than
     /// defaultTimeout: real cross-screen waits already use 15-20s after a
     /// cold start.
