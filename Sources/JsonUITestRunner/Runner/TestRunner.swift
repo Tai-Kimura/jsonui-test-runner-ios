@@ -6,6 +6,16 @@ public struct TestRunnerConfig {
     public var screenshotOnFailure: Bool = true
     public var continueOnFailure: Bool = false
     public var defaultTimeout: TimeInterval = 5.0
+    /// Verify the screen marker automatically whenever a flow's inline step
+    /// moves to a different `screen`, without the test spelling an
+    /// assertion. Requires the app to be built with a library new enough to
+    /// emit markers, so it stays opt-in until a project has rebuilt; the
+    /// canonical end state is on-by-default.
+    public var verifyScreenTransitions: Bool = false
+    /// Timeout for those implicit verifications. Deliberately larger than
+    /// defaultTimeout: real cross-screen waits already use 15-20s after a
+    /// cold start.
+    public var screenTransitionTimeout: TimeInterval = 10.0
     /// Baseline directory for the `screenshot` assertion (default: temp dir)
     public var baselineDir: URL? = nil
     /// When true, screenshot baselines are always overwritten and the assertion passes
@@ -609,6 +619,24 @@ public class JsonUITestRunner {
         return substituteArgsInStep(step, args: variables.asDictionary)
     }
 
+    /// The screen the previously executed inline step ran on; nil means
+    /// "unknown", which forces the next inline step to be verified.
+    private var trackedScreen: String?
+
+    /// Implicit screen verification (canon: implicitVerification). Runs
+    /// BEFORE the step, because the step is meant to run ON that screen.
+    private func verifyScreenTransitionIfNeeded(_ step: FlowTestStep, warnings: inout [String]) throws {
+        guard config.verifyScreenTransitions, let screen = step.screen else { return }
+        // Same screen as the last executed step: nothing has changed.
+        guard screen != trackedScreen else { return }
+
+        try assertionExecutor.execute(
+            step: TestStep(assert: "screen", timeout: Int(config.screenTransitionTimeout * 1000), name: screen),
+            in: app
+        )
+        trackedScreen = screen
+    }
+
     private func executeFlowStep(_ step: FlowTestStep, warnings: inout [String]) throws {
         // Step-level `when` for file / block / inline steps
         if let condition = step.when {
@@ -620,6 +648,10 @@ public class JsonUITestRunner {
 
         // Handle file reference steps
         if step.isFileReference {
+            // A file reference carries no screen of its own, and the case it
+            // runs may end anywhere — reset to unknown so the next inline
+            // step is verified rather than trusted.
+            trackedScreen = nil
             try executeFileReferenceStep(step, warnings: &warnings)
             return
         }
@@ -632,6 +664,7 @@ public class JsonUITestRunner {
 
         // Handle inline steps
         if step.action != nil || step.assert != nil {
+            try verifyScreenTransitionIfNeeded(step, warnings: &warnings)
             try executeStepGuarded(step.toTestStep(), warnings: &warnings)
         }
     }
