@@ -192,7 +192,18 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         let marker = ScreenMarker.identifier(for: screenId)
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: marker, in: app)
-            return element.exists && element.isHittable
+            guard element.exists else { return false }
+            if element.isHittable { return true }
+            // Covered — but by WHAT? isHittable alone cannot tell a sheet
+            // from the app's own overlay, and the difference is the whole
+            // question. The marker sits inside the generated view, so any
+            // overlay the app layers outside it (coach mark, loading scrim,
+            // hand-rolled modal) always covers the marker while the screen
+            // is plainly still the one on display. A sheet or cover, by
+            // contrast, is another SCREEN and brings its own marker.
+            //
+            // So: still displayed unless something else claims to be.
+            return ScreenMarker.hittableScreens(in: app, excluding: screenId).isEmpty
         } onTimeout: {
             AssertionError.assertionFailed(
                 assertion: "screen",
