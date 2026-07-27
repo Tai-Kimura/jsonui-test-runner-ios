@@ -59,6 +59,10 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     private let channelTolerance: Int = 16
 
     private let defaultTimeout: TimeInterval
+    /// Cross-screen waits are legitimately slower than in-screen ones: real
+    /// suites already hand-write 15-20s after a cold start. Distinct from
+    /// defaultTimeout so raising one does not silently raise the other.
+    private let screenTransitionTimeout: TimeInterval
     private var stateProvider: ViewModelStateProvider?
     private let baselineDir: URL
     private let updateBaselines: Bool
@@ -69,11 +73,13 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     public init(
         stateProvider: ViewModelStateProvider? = nil,
         defaultTimeout: TimeInterval = 5.0,
+        screenTransitionTimeout: TimeInterval = 10.0,
         baselineDir: URL? = nil,
         updateBaselines: Bool = false
     ) {
         self.stateProvider = stateProvider
         self.defaultTimeout = defaultTimeout
+        self.screenTransitionTimeout = screenTransitionTimeout
         self.baselineDir = baselineDir
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("jsonui-baselines", isDirectory: true)
         self.updateBaselines = updateBaselines
@@ -113,6 +119,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             try assertState(step: step, timeout: timeout)
         case "screenshot":
             try assertScreenshot(step: step, in: app)
+        case "screen":
+            try assertScreen(step: step, timeout: step.timeoutInterval(default: screenTransitionTimeout), in: app)
         default:
             throw AssertionError.unknownAssertion(assertion: assertion)
         }
@@ -164,6 +172,35 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     }
 
     // MARK: - Assertion Implementations
+
+    /// `assert: "screen"` — the named screen IS DISPLAYED.
+    ///
+    /// Not "displayed exclusively": embedded screens, split panes and tab
+    /// hosts legitimately show several markers at once, so this only ever
+    /// looks at the target's own marker.
+    ///
+    /// The predicate is `exists && isHittable`, measured on iOS 18.6 across
+    /// push / sheet / fullScreenCover / tab switch / split pane: a pushed-away
+    /// screen and an inactive tab leave the hierarchy entirely, while a screen
+    /// covered by a sheet stays but reports isHittable == false. This works
+    /// only because the marker is a LEAF — the same reason `visible` has to
+    /// fall back to a non-empty frame for containers does not apply here.
+    private func assertScreen(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {
+        guard let screenId = step.name else {
+            throw AssertionError.missingParameter(assertion: "screen", parameter: "name")
+        }
+        let marker = ScreenMarker.identifier(for: screenId)
+        try pollUntil(timeout: timeout) {
+            let element = self.findElementQuery(id: marker, in: app)
+            return element.exists && element.isHittable
+        } onTimeout: {
+            AssertionError.assertionFailed(
+                assertion: "screen",
+                expected: "screen '\(screenId)' displayed",
+                actual: ScreenMarker.diagnosis(screenId: screenId, in: app)
+            )
+        }
+    }
 
     private func assertVisible(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {
         guard let id = step.id else {
