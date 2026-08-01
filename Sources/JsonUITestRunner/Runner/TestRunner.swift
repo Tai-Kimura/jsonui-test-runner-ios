@@ -6,6 +6,13 @@ public struct TestRunnerConfig {
     public var screenshotOnFailure: Bool = true
     public var continueOnFailure: Bool = false
     public var defaultTimeout: TimeInterval = 5.0
+    /// Extra attempts for a FAILED case (or flow body) before recording the
+    /// failure — 0 (default) keeps single-run behaviour. The final result
+    /// carries `attempts` (total runs) and a pass after a retry is marked
+    /// `flaky` in the results JSON. Retries re-run the steps as-is (no
+    /// re-launch between attempts), so cases that mutate app state
+    /// non-idempotently may not benefit.
+    public var caseRetries: Int = 0
     /// Verify the screen marker automatically whenever a flow's inline step
     /// moves to a different `screen`, without the test spelling an
     /// assertion. ON by default — this is the canonical behaviour.
@@ -57,6 +64,10 @@ public struct TestCaseResult {
     public let skipReason: SkipReason?
     /// Warnings collected during the case (optional-step failures, baseline created, ...)
     public let warnings: [String]
+    /// How many times the case ran in total, retries included (1 = settled
+    /// on the first run). Nil on skipped rows — a case that never ran has
+    /// no attempt count (results.schema.json attempts).
+    public let attempts: Int?
 
     public init(
         name: String,
@@ -66,7 +77,8 @@ public struct TestCaseResult {
         screenshots: [XCTAttachment] = [],
         skipped: Bool = false,
         skipReason: SkipReason? = nil,
-        warnings: [String] = []
+        warnings: [String] = [],
+        attempts: Int? = nil
     ) {
         self.name = name
         self.passed = passed
@@ -76,6 +88,22 @@ public struct TestCaseResult {
         self.skipped = skipped
         self.skipReason = skipReason
         self.warnings = warnings
+        self.attempts = attempts
+    }
+
+    /// Copy with the attempts stamp (results.schema.json attempts).
+    func stamping(attempts: Int) -> TestCaseResult {
+        TestCaseResult(
+            name: name,
+            passed: passed,
+            duration: duration,
+            error: error,
+            screenshots: screenshots,
+            skipped: skipped,
+            skipReason: skipReason,
+            warnings: warnings,
+            attempts: attempts
+        )
     }
 }
 
@@ -299,7 +327,7 @@ public class JsonUITestRunner {
                 continue
             }
 
-            let result = runTestCase(testCase)
+            let result = runTestCaseWithRetries(testCase)
             caseResults.append(result)
 
             if !result.passed && !config.continueOnFailure {
@@ -331,6 +359,18 @@ public class JsonUITestRunner {
         )
         writeResultsIfNeeded(result)
         return result
+    }
+
+    /// Run a case, re-running it up to `config.caseRetries` extra times
+    /// while it fails. The returned result is the final attempt's, stamped
+    /// with the total attempt count (skips are handled by the caller and
+    /// never reach this).
+    private func runTestCaseWithRetries(_ testCase: TestCase) -> TestCaseResult {
+        let (result, attempts) = CaseRetry.run(
+            retries: config.caseRetries,
+            isPass: { (r: TestCaseResult) in r.passed }
+        ) { runTestCase(testCase) }
+        return result.stamping(attempts: attempts)
     }
 
     /// Run a single test case (setup/teardown are handled by the caller)
@@ -434,50 +474,69 @@ public class JsonUITestRunner {
         let startTime = Date()
         var screenshots: [XCTAttachment] = []
         var warnings: [String] = []
-        var currentStepIndex = 0
         // A flow acts as a single case for artifact identity purposes.
         currentTestName = flowTest.metadata.name
         currentCaseName = flowTest.metadata.name
         var flowError: Error? = nil
 
-        do {
-            // Execute setup
-            if let setupSteps = flowTest.setup {
-                for step in setupSteps {
-                    try executeFlowStep(step, warnings: &warnings)
+        // The flow body (setup + steps) is the retry unit: flows begin with
+        // their own launch/navigation steps, so a re-run starts clean.
+        // Teardown still runs exactly once, after the final attempt.
+        // Warnings/screenshots from a failed non-final attempt are dropped
+        // (same rule as the `retry` step) — the last attempt's survive.
+        let maxAttempts = max(0, config.caseRetries) + 1
+        var flowAttempts = 0
+        repeat {
+            flowAttempts += 1
+            flowError = nil
+            var attemptScreenshots: [XCTAttachment] = []
+            var attemptWarnings: [String] = []
+            var currentStepIndex = 0
+
+            do {
+                // Execute setup
+                if let setupSteps = flowTest.setup {
+                    for step in setupSteps {
+                        try executeFlowStep(step, warnings: &attemptWarnings)
+                    }
                 }
-            }
 
-            // Execute flow steps
-            for (index, step) in flowTest.steps.enumerated() {
-                currentStepIndex = index
-                try executeFlowStep(step, warnings: &warnings)
+                // Execute flow steps
+                for (index, step) in flowTest.steps.enumerated() {
+                    currentStepIndex = index
+                    try executeFlowStep(step, warnings: &attemptWarnings)
 
-                // Check for checkpoints
-                if let checkpoints = flowTest.checkpoints {
-                    for checkpoint in checkpoints where checkpoint.afterStep == index {
-                        if checkpoint.screenshot == true {
-                            let screenshot = app.screenshot()
-                            let attachment = XCTAttachment(screenshot: screenshot)
-                            attachment.name = "Checkpoint_\(currentTestName)_\(checkpoint.name)"
-                            attachment.lifetime = .keepAlways
-                            screenshots.append(attachment)
-                            attachArtifact(attachment)
+                    // Check for checkpoints
+                    if let checkpoints = flowTest.checkpoints {
+                        for checkpoint in checkpoints where checkpoint.afterStep == index {
+                            if checkpoint.screenshot == true {
+                                let screenshot = app.screenshot()
+                                let attachment = XCTAttachment(screenshot: screenshot)
+                                attachment.name = "Checkpoint_\(currentTestName)_\(checkpoint.name)"
+                                attachment.lifetime = .keepAlways
+                                attemptScreenshots.append(attachment)
+                                attachArtifact(attachment)
+                            }
                         }
                     }
                 }
+            } catch {
+                flowError = error
+                if config.screenshotOnFailure {
+                    let screenshot = app.screenshot()
+                    let attachment = XCTAttachment(screenshot: screenshot)
+                    attachment.name = "Failure_\(currentTestName)_Step\(currentStepIndex)"
+                    attachment.lifetime = .keepAlways
+                    attemptScreenshots.append(attachment)
+                    attachArtifact(attachment)
+                }
             }
-        } catch {
-            flowError = error
-            if config.screenshotOnFailure {
-                let screenshot = app.screenshot()
-                let attachment = XCTAttachment(screenshot: screenshot)
-                attachment.name = "Failure_\(currentTestName)_Step\(currentStepIndex)"
-                attachment.lifetime = .keepAlways
-                screenshots.append(attachment)
-                attachArtifact(attachment)
+
+            if flowError == nil || flowAttempts >= maxAttempts {
+                warnings.append(contentsOf: attemptWarnings)
+                screenshots.append(contentsOf: attemptScreenshots)
             }
-        }
+        } while flowError != nil && flowAttempts < maxAttempts
 
         var results: [TestCaseResult] = [
             TestCaseResult(
@@ -486,7 +545,8 @@ public class JsonUITestRunner {
                 duration: Date().timeIntervalSince(startTime),
                 error: flowError,
                 screenshots: screenshots,
-                warnings: warnings
+                warnings: warnings,
+                attempts: flowAttempts
             )
         ]
 

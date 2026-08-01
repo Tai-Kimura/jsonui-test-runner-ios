@@ -37,6 +37,15 @@ public enum ResultsWriter {
                 if !caseResult.warnings.isEmpty {
                     entry["warnings"] = caseResult.warnings
                 }
+                // attempts = total runs (1 = settled first try); flaky only
+                // on a pass that needed retries — the validator rejects
+                // flaky on failures (results.schema.json).
+                if !caseResult.skipped, let attempts = caseResult.attempts {
+                    entry["attempts"] = attempts
+                    if caseResult.passed && attempts > 1 {
+                        entry["flaky"] = true
+                    }
+                }
                 return entry
             }
             return [
