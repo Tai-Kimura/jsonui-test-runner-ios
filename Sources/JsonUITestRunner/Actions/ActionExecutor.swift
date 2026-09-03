@@ -743,22 +743,12 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.actionFailed(action: "selectOption", reason: "No picker wheels found in picker view")
         }
 
-        // Select by label (text value)
-        if let label = step.label {
-            let wheel = pickerWheels.firstMatch
-            wheel.adjust(toPickerWheelValue: label)
-            return
-        }
-
-        // Select by value (same as label for UIPickerView)
-        if let value = step.value {
-            let wheel = pickerWheels.firstMatch
-            wheel.adjust(toPickerWheelValue: value)
-            return
-        }
-
-        // Select by index - parse items from accessibility value
-        if let index = step.index {
+        // Precedence is the schema's: index, then value, then label — see
+        // SelectOptionSelector. This executor read `label` first, so a step
+        // carrying `index` plus a free-text note in `label` selected the note.
+        let wheel = pickerWheels.firstMatch
+        switch SelectOptionSelector.resolve(index: step.index, value: step.value, label: step.label) {
+        case .index(let index):
             // SwiftJsonUI encodes items in accessibilityValue with "|||" separator
             guard let itemsString = pickerView.value as? String, !itemsString.isEmpty else {
                 throw ActionError.actionFailed(action: "selectOption", reason: "Cannot get items from picker. Ensure SelectBox has items with accessibilityValue set.")
@@ -768,14 +758,19 @@ public class XCUITestActionExecutor: ActionExecutor {
             guard index >= 0 && index < items.count else {
                 throw ActionError.actionFailed(action: "selectOption", reason: "Index \(index) out of range. Picker has \(items.count) items.")
             }
+            wheel.adjust(toPickerWheelValue: items[index])
 
-            let targetValue = items[index]
-            let wheel = pickerWheels.firstMatch
-            wheel.adjust(toPickerWheelValue: targetValue)
-            return
+        case .value(let value):
+            // A UIPickerView wheel is addressed by its displayed text; the
+            // machine key and the label coincide for SelectBox items.
+            wheel.adjust(toPickerWheelValue: value)
+
+        case .label(let label):
+            wheel.adjust(toPickerWheelValue: label)
+
+        case nil:
+            throw ActionError.missingParameter(action: "selectOption", parameter: "index, value, or label")
         }
-
-        throw ActionError.missingParameter(action: "selectOption", parameter: "label, value, or index")
     }
 
     private func selectDatePickerValue(datePicker: XCUIElement, step: TestStep, in app: XCUIApplication) throws {
