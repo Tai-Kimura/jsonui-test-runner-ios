@@ -462,20 +462,14 @@ public class XCUITestActionExecutor: ActionExecutor {
         // stderr that the scroll did not achieve it.
         if targetPresentWithAFrame() {
             let element = findElementQuery(id: id, in: app)
-            // Two different repairs, so say which one this is: on screen the
-            // whole time means something is on top of it (a bottom fixed
-            // bar, a tab bar, the keyboard) and no amount of scrolling will
-            // help; off the viewport means the scroll could not reach it.
-            if ScrollVisibility.onScreen(isHittable: false, frame: element.frame, appFrame: app.frame) {
-                note("scrollUntilVisible '\(id)': scrolled both ways and it is on screen "
-                    + "(frame \(element.frame), window \(app.frame)) but never hittable — something "
-                    + "is probably covering it (a bottom fixed bar, a tab bar, the keyboard); "
-                    + "continuing, the step that uses it must resolve it")
-            } else {
-                note("scrollUntilVisible '\(id)': scrolled both ways and it is still off the viewport "
-                    + "(frame \(element.frame), window \(app.frame)) — continuing, the step that uses "
-                    + "it must resolve it")
-            }
+            // Observation, then guesses labelled as guesses, and the one
+            // bit that says which guesses apply (ScrollDiagnosis).
+            let viewport: CGRect? = (scroller == app) ? nil : scroller.frame
+            let label = step.container.map { "container '\($0)'" }
+                ?? (viewport == nil ? "no container" : "first scroll view")
+            note(ScrollDiagnosis.message(id: id, element: element.frame,
+                                         viewport: viewport, viewportLabel: label,
+                                         appWindow: app.frame))
             return
         }
         throw ActionError.actionFailed(
