@@ -17,7 +17,7 @@ public enum TapRoute: Equatable {
     case noFrame
 }
 
-/// Whether a scroll target is actually ON SCREEN.
+/// Whether a scroll target is where the next step can act on it.
 ///
 /// `exists && !frame.isEmpty` is not that question: an XCUITest element keeps
 /// existing, with a real frame, while it sits far outside the viewport, so
@@ -28,11 +28,29 @@ public enum TapRoute: Equatable {
 /// it into view first; 1.9.3 refused that shape before tapping and the
 /// no-op scroll became a failure.
 ///
-/// Being hittable is the strong answer. Otherwise the frame must intersect
-/// the app window — intersection, not "the center is inside", because an
-/// element taller than the viewport is on screen while its center is not,
-/// and requiring the center would scroll such a section forever.
+/// 1.9.4 stopped on "hittable OR the frame intersects the window", taking
+/// intersection as a stand-in for hittability. It is not one: intersecting
+/// the window says nothing about being COVERED. Measured 2026-09-04 on a
+/// screen with a bottom fixed bar — the bar spans 818..874, the scroll
+/// stopped with the target at 818..850 exactly underneath it, and the
+/// frame-center tap landed on the bar and opened another screen. One more
+/// swipe would have brought the target clear.
+///
+/// So hittability — which IS the hit test, "visible and nothing on top" —
+/// decides when to stop. Intersection keeps only its honest job: telling a
+/// failed search whether the target was on screen all along (a covering
+/// bar) or never arrived, which is the difference between two very
+/// different repairs.
 public enum ScrollVisibility {
+    /// The stop condition. Deliberately not "or it intersects the window":
+    /// see above, that is how a scroll came to rest under a fixed bar.
+    public static func canStopScrolling(isHittable: Bool) -> Bool {
+        isHittable
+    }
+
+    /// Diagnostic only. Whether any of the frame is inside the window —
+    /// intersection, not "the center is inside", because an element taller
+    /// than the viewport is on screen while its center is not.
     public static func onScreen(isHittable: Bool, frame: CGRect, appFrame: CGRect) -> Bool {
         if isHittable { return true }
         if frame.isNull || frame.isInfinite || frame.isEmpty { return false }

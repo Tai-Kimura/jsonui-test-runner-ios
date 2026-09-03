@@ -1,13 +1,33 @@
 import XCTest
 @testable import JsonUITestRunner
 
-/// When `scrollUntilVisible` may stop. The first case is the 2026-09-04
+/// The stop condition (`canStopScrolling`) and the failure-path diagnostic
+/// (`onScreen`). The `onScreen` cases below are the 2026-09-04
 /// consumer incident verbatim: a section at y=1155.67 on an 874pt-tall
 /// window — 281pt below the last visible row — that the old rule
 /// (`exists && !frame.isEmpty`) called visible, so the step returned without
 /// swiping once.
 final class ScrollVisibilityTests: XCTestCase {
     private let phone = CGRect(x: 0, y: 0, width: 402, height: 874)
+
+    /// The bottom-fixed-bar incident (2026-09-04, measured on two runs): the
+    /// bar covers 818..874, the scroll came to rest with the target at
+    /// 818..850 exactly under it, and the frame-center tap opened the bar's
+    /// own screen. The target intersects the window, so the 1.9.4 stop
+    /// condition accepted it — this arm is what keeps intersection out of
+    /// the stop condition.
+    func testATargetUnderABottomFixedBarDoesNotStopTheScroll() {
+        let underTheBar = CGRect(x: 88.67, y: 818, width: 97, height: 32)
+        XCTAssertTrue(ScrollVisibility.onScreen(isHittable: false, frame: underTheBar, appFrame: phone),
+                      "it is on screen — which is exactly why intersection is not enough")
+        XCTAssertFalse(ScrollVisibility.canStopScrolling(isHittable: false),
+                       "not hittable means covered or not there; keep scrolling")
+    }
+
+    func testHittabilityIsTheStopCondition() {
+        XCTAssertTrue(ScrollVisibility.canStopScrolling(isHittable: true))
+        XCTAssertFalse(ScrollVisibility.canStopScrolling(isHittable: false))
+    }
 
     func testSectionBelowTheViewportIsNotVisible() {
         let below = CGRect(x: 0, y: 1155.6666666666665, width: 402, height: 78)

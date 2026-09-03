@@ -178,11 +178,10 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// failing: this is a settle, not a gate — whatever the state at the
     /// deadline, the step continues and the caller decides.
     ///
-    /// Hittable is the answer for anything tappable. A target that is
-    /// visible but never hittable (a plain section, a container) would
-    /// otherwise pay the whole budget on every scroll, so a frame that
-    /// stopped moving between two samples also counts as at rest — which is
-    /// the same signal, deceleration having ended.
+    /// A leg now only reports success once the target is hittable, so this
+    /// waits on the other half of "at rest": the frame must stop moving.
+    /// Hittability is not the exit here — a decelerating element can be
+    /// hittable and still slide out from under the tap.
     private func settleAfterScroll(id: String, in app: XCUIApplication) {
         let deadline = Date().addingTimeInterval(2.0)
         var previousFrame: CGRect?
@@ -192,7 +191,6 @@ public class XCUITestActionExecutor: ActionExecutor {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
                 continue
             }
-            if element.isHittable { return }
             let frame = element.frame
             if let previousFrame, previousFrame == frame { return }
             previousFrame = frame
@@ -363,14 +361,14 @@ public class XCUITestActionExecutor: ActionExecutor {
         let direction = step.direction ?? "down"
         let timeout = step.timeoutInterval(default: 20.0)
 
-        // On screen, not merely present: see ScrollVisibility. The old rule
-        // (`exists && !frame.isEmpty`) accepted an element hundreds of points
-        // below the viewport and returned without swiping.
+        // Hittable, not merely present and not merely on screen: see
+        // ScrollVisibility. `exists && !frame.isEmpty` accepted an element
+        // hundreds of points below the viewport (no swipe at all), and
+        // "intersects the window" accepted one sitting under a bottom fixed
+        // bar (swiped, then tapped the bar).
         func targetVisible() -> Bool {
             let element = findElementQuery(id: id, in: app)
-            return ScrollVisibility.onScreen(
-                isHittable: element.isHittable, frame: element.frame, appFrame: app.frame
-            )
+            return element.exists && ScrollVisibility.canStopScrolling(isHittable: element.isHittable)
         }
 
         // What the old rule accepted. Tightening the STOP condition must not
@@ -464,9 +462,20 @@ public class XCUITestActionExecutor: ActionExecutor {
         // stderr that the scroll did not achieve it.
         if targetPresentWithAFrame() {
             let element = findElementQuery(id: id, in: app)
-            note("scrollUntilVisible '\(id)': scrolled both ways and it is still off the viewport "
-                + "(frame \(element.frame), window \(app.frame)) — continuing, the step that uses "
-                + "it must resolve it")
+            // Two different repairs, so say which one this is: on screen the
+            // whole time means something is on top of it (a bottom fixed
+            // bar, a tab bar, the keyboard) and no amount of scrolling will
+            // help; off the viewport means the scroll could not reach it.
+            if ScrollVisibility.onScreen(isHittable: false, frame: element.frame, appFrame: app.frame) {
+                note("scrollUntilVisible '\(id)': scrolled both ways and it is on screen "
+                    + "(frame \(element.frame), window \(app.frame)) but never hittable — something "
+                    + "is probably covering it (a bottom fixed bar, a tab bar, the keyboard); "
+                    + "continuing, the step that uses it must resolve it")
+            } else {
+                note("scrollUntilVisible '\(id)': scrolled both ways and it is still off the viewport "
+                    + "(frame \(element.frame), window \(app.frame)) — continuing, the step that uses "
+                    + "it must resolve it")
+            }
             return
         }
         throw ActionError.actionFailed(
