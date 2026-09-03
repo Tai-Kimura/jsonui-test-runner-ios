@@ -44,6 +44,57 @@ final class ElementPreferenceTests: XCTestCase {
         }
     }
 
+    // MARK: - reach, not just preference
+    //
+    // 1.9.6 replaced nine per-type queries — each unbounded in POSITION —
+    // with one query whose scan stopped at eight candidates, and applied
+    // that cap to the interactive search as well. With nine or more
+    // elements sharing an id and the interactive one late, the resolver
+    // stopped finding it and fell through to hittability: it could tap the
+    // label instead of the control. These arms pin the reach; the priority
+    // arms above never could, because reach is not a property of the pure
+    // ordering function they exercise.
+
+    func testACapMissWithMoreCandidatesFallsBackToTheTypedSearch() {
+        XCTAssertTrue(ElementPreference.needsTypedSearch(totalMatches: 9, firstPassWinner: nil))
+        XCTAssertTrue(ElementPreference.needsTypedSearch(totalMatches: 40, firstPassWinner: nil))
+    }
+
+    func testTheFastPathIsNotPaidForWhenEverythingFitsInTheFirstPass() {
+        // Eight or fewer: the single query already saw every candidate, so
+        // asking nine more times would be the cost 1.9.6 removed.
+        XCTAssertFalse(ElementPreference.needsTypedSearch(totalMatches: 8, firstPassWinner: nil))
+        XCTAssertFalse(ElementPreference.needsTypedSearch(totalMatches: 1, firstPassWinner: nil))
+        XCTAssertFalse(ElementPreference.needsTypedSearch(totalMatches: 0, firstPassWinner: nil))
+    }
+
+    func testAWinnerInTheFirstPassEndsIt() {
+        // However many candidates there are, a found control is the answer.
+        XCTAssertFalse(ElementPreference.needsTypedSearch(totalMatches: 40, firstPassWinner: 3))
+        XCTAssertFalse(ElementPreference.needsTypedSearch(totalMatches: 9, firstPassWinner: 0))
+    }
+
+    func testTheCapIsTheOneTheResolverUses() {
+        // The boundary is stated once and read from there: a resolver that
+        // scans a different number than this would re-open the same gap.
+        XCTAssertEqual(ElementPreference.firstPassCap, 8)
+        XCTAssertFalse(ElementPreference.needsTypedSearch(
+            totalMatches: ElementPreference.firstPassCap, firstPassWinner: nil))
+        XCTAssertTrue(ElementPreference.needsTypedSearch(
+            totalMatches: ElementPreference.firstPassCap + 1, firstPassWinner: nil))
+    }
+
+    /// The typed search is the only thing restoring the pre-1.9.6 reach, and
+    /// nothing in the pure arms above would notice its removal — the same
+    /// blind spot that let the cap ship. Hold it at the source.
+    func testTheResolverStillHasATypedSearchForCandidatesPastTheCap() throws {
+        let source = try Self.actionExecutorSource()
+        XCTAssertTrue(source.contains("ElementPreference.needsTypedSearch("),
+                      "the resolver must still consult the reach policy")
+        XCTAssertTrue(source.contains("for type in ElementPreference.interactive"),
+                      "the typed search past the cap must still exist")
+    }
+
     /// On a query that matches nothing, `allElementsBoundByIndex` and
     /// `firstMatch.elementType` do not return empty or zero — they RAISE
     /// ("Failed to get matching snapshot: No matches found"), measured

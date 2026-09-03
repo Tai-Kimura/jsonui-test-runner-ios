@@ -1171,10 +1171,11 @@ public class XCUITestActionExecutor: ActionExecutor {
         let total = matches.count
         guard total > 0 else { return generic }
 
-        // Bounded like the old fallback scan: a hierarchy with dozens of
-        // elements under one identifier is a mistake in the layout, not a
-        // case to pay for on every tap.
-        let candidateCount = min(total, 8)
+        // A cheap first pass over the leading candidates. This is a bound on
+        // WORK, not on where a target may live — the old per-type queries
+        // asked the whole tree, and the typed search below restores that
+        // reach for the only shape where it can matter.
+        let candidateCount = min(total, ElementPreference.firstPassCap)
         var candidates: [XCUIElement] = []
         var index = 0
         while index < candidateCount {
@@ -1182,9 +1183,23 @@ public class XCUITestActionExecutor: ActionExecutor {
             index += 1
         }
 
-        if let winner = ElementPreference.interactiveWinner(candidates.map { $0.elementType }) {
+        let firstPassWinner = ElementPreference.interactiveWinner(candidates.map { $0.elementType })
+        if let winner = firstPassWinner {
             return candidates[winner]
         }
+
+        // Nine or more elements share this identifier and none of the first
+        // eight is interactive: ask by type, as the pre-1.9.6 resolver did,
+        // so a control sitting past the cap is still preferred over the
+        // label that mirrors it. One query per type — paid only for a shape
+        // that is rare and was previously the ONLY path.
+        if ElementPreference.needsTypedSearch(totalMatches: total, firstPassWinner: firstPassWinner) {
+            for type in ElementPreference.interactive {
+                let typed = app.descendants(matching: type).matching(identifier: id).firstMatch
+                if typed.exists { return typed }
+            }
+        }
+
         // No interactive-typed match — the first hittable one (the mirror
         // StaticText of an offscreen control is typically not hittable at
         // the control's position).

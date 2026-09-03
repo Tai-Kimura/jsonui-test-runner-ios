@@ -24,6 +24,26 @@ public enum ElementPreference {
         .slider, .stepper, .link, .cell,
     ]
 
+    /// How many candidates the cheap first pass looks at. The pass exists
+    /// to avoid indexing a whole hierarchy on every tap; it is not a limit
+    /// on where a target may live (see `needsTypedSearch`).
+    public static let firstPassCap = 8
+
+    /// Whether the cheap first pass has to be backed up by a search that is
+    /// unbounded in POSITION.
+    ///
+    /// The per-type queries this replaced were unbounded: each asked the
+    /// whole tree for "an element of this type with this id", so an
+    /// interactive match at index 20 was found. Capping the replacement's
+    /// scan at eight quietly narrowed that — with nine or more elements
+    /// sharing an identifier and the interactive one late, 1.9.6 fell
+    /// through to hittability and could tap the label instead of the
+    /// control. The cap is kept for the common shape and paid past only
+    /// when the shape is actually there.
+    public static func needsTypedSearch(totalMatches: Int, firstPassWinner: Int?) -> Bool {
+        firstPassWinner == nil && totalMatches > firstPassCap
+    }
+
     /// Index into `types` of the candidate a tap should use, or nil when
     /// none of them is an interactive type. Ties on type go to the earlier
     /// candidate; different types go by the order above.
