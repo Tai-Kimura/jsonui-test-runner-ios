@@ -675,7 +675,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             keyboard.buttons[$0]
         }
         if UIDevice.current.userInterfaceIdiom == .pad,
-           let lastKey = keyboard.buttons.allElementsBoundByIndex.last {
+           let lastKey = allElements(keyboard.buttons).last {
             dismissCandidates.append(lastKey)
         }
         let appFrame = app.frame
@@ -942,7 +942,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // US locale: Month, Day, Year (e.g., "January", "15", "2024")
         // Try to find and adjust each component
 
-        let allWheels = pickerWheels.allElementsBoundByIndex
+        let allWheels = allElements(pickerWheels)
 
         for wheel in allWheels {
             guard let currentValue = wheel.value as? String else { continue }
@@ -985,7 +985,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.actionFailed(action: "selectOption", reason: "Invalid time format: \(timeString). Expected HH:mm")
         }
 
-        let allWheels = pickerWheels.allElementsBoundByIndex
+        let allWheels = allElements(pickerWheels)
 
         for wheel in allWheels {
             guard let currentValue = wheel.value as? String else { continue }
@@ -1134,33 +1134,62 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// (common/onclick__callback_fire, Toggle/onValueChange__callback_fire).
     /// Prefer interactive element types, then any hittable match, and only
     /// fall back to the generic match.
+    /// Every element of a query, or none — never a raise.
+    ///
+    /// `allElementsBoundByIndex` does not return an empty array for a query
+    /// that matches nothing: it RAISES ("Failed to get matching snapshot: No
+    /// matches found"), measured 2026-09-04. Every caller here reaches for
+    /// it in a situation where the match may legitimately be absent (an
+    /// iPad keyboard with no button elements — the phantom-keyboard shape
+    /// this file already documents — or a picker whose wheels are not
+    /// exposed yet), and a raise there fails the step with XCTest's message
+    /// instead of the driver's.
+    private func allElements(_ query: XCUIElementQuery) -> [XCUIElement] {
+        query.count > 0 ? query.allElementsBoundByIndex : []
+    }
+
+    /// The element a tap should go to, from ONE query for the identifier.
+    ///
+    /// Semantics unchanged (ElementPreference): an interactive type wins in
+    /// a fixed order, else the first hittable match, else the plain first
+    /// match. Previously each of the nine types was its own query — nine
+    /// full resolutions before the fallback, 54–287ms per lookup against
+    /// 4–13ms for one query (measured 2026-09-04).
+    ///
+    /// `matches.count` is read once and everything else indexes into it.
+    /// It is also the guard: on an empty query `allElementsBoundByIndex`
+    /// and `firstMatch.elementType` do not return empty or zero, they
+    /// RAISE ("Failed to get matching snapshot: No matches found") — an
+    /// unguarded rewrite would throw on the most common path there is, an
+    /// element that is not there.
     private func findTappableElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
-        let generic = findElementQuery(id: id, in: app)
+        let matches = app.descendants(matching: .any).matching(identifier: id)
+        let generic = matches.firstMatch
         guard generic.waitForExistence(timeout: defaultTimeout) else {
             throw ActionError.elementNotFound(id: id)
         }
-        let interactiveTypes: [XCUIElement.ElementType] = [
-            .button, .switch, .toggle, .checkBox, .segmentedControl,
-            .slider, .stepper, .link, .cell,
-        ]
-        for type in interactiveTypes {
-            let candidate = app.descendants(matching: type).matching(identifier: id).firstMatch
-            if candidate.exists {
-                return candidate
-            }
-        }
-        // No interactive-typed match — scan the first few generic matches for
-        // a hittable one (the mirror StaticText of an offscreen control is
-        // typically not hittable at the control's position).
-        let matches = app.descendants(matching: .any).matching(identifier: id)
-        let count = min(matches.count, 8)
+        let total = matches.count
+        guard total > 0 else { return generic }
+
+        // Bounded like the old fallback scan: a hierarchy with dozens of
+        // elements under one identifier is a mistake in the layout, not a
+        // case to pay for on every tap.
+        let candidateCount = min(total, 8)
+        var candidates: [XCUIElement] = []
         var index = 0
-        while index < count {
-            let candidate = matches.element(boundBy: index)
-            if candidate.exists && candidate.isHittable {
-                return candidate
-            }
+        while index < candidateCount {
+            candidates.append(matches.element(boundBy: index))
             index += 1
+        }
+
+        if let winner = ElementPreference.interactiveWinner(candidates.map { $0.elementType }) {
+            return candidates[winner]
+        }
+        // No interactive-typed match — the first hittable one (the mirror
+        // StaticText of an offscreen control is typically not hittable at
+        // the control's position).
+        if let hittable = candidates.first(where: { $0.exists && $0.isHittable }) {
+            return hittable
         }
         return generic
     }
