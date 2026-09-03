@@ -168,6 +168,38 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
     }
 
+    /// Let a just-scrolled target come to rest before the next step reads it.
+    ///
+    /// A leg stops the moment the target reports on-screen, which can be
+    /// mid-deceleration: measured 2026-09-04, a tap immediately after a
+    /// successful leg read the element at its PRE-scroll position (y=1155 on
+    /// an 874pt window) even though the same leg, given a moment, settled it
+    /// at y=474 and hittable. Poll for hittability, briefly and without
+    /// failing: this is a settle, not a gate — whatever the state at the
+    /// deadline, the step continues and the caller decides.
+    ///
+    /// Hittable is the answer for anything tappable. A target that is
+    /// visible but never hittable (a plain section, a container) would
+    /// otherwise pay the whole budget on every scroll, so a frame that
+    /// stopped moving between two samples also counts as at rest — which is
+    /// the same signal, deceleration having ended.
+    private func settleAfterScroll(id: String, in app: XCUIApplication) {
+        let deadline = Date().addingTimeInterval(2.0)
+        var previousFrame: CGRect?
+        while Date() < deadline {
+            let element = findElementQuery(id: id, in: app)
+            guard element.exists else {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                continue
+            }
+            if element.isHittable { return }
+            let frame = element.frame
+            if let previousFrame, previousFrame == frame { return }
+            previousFrame = frame
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+    }
+
     /// Tap an element findTappableElement accepted. Acceptance is by
     /// existence and a non-empty frame, but `XCUIElement.tap()` demands
     /// `isHittable`, and XCTest answers false for elements it does see:
@@ -193,16 +225,22 @@ public class XCUITestActionExecutor: ActionExecutor {
         case .frameCenter:
             note("\(action) '\(id)': exists but isHittable == false (frame \(frame)) — tapping the frame center instead of the element")
             element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        case .offscreen:
-            throw ActionError.actionFailed(
-                action: action,
-                reason: "'\(id)' exists but isHittable == false and its frame \(frame) has its center outside the app window \(app.frame) — no coordinate to tap"
-            )
-        case .noFrame:
-            throw ActionError.actionFailed(
-                action: action,
-                reason: "'\(id)' exists but isHittable == false and has no frame (\(frame)) — nothing to aim a coordinate tap at"
-            )
+        case .offscreen, .noFrame:
+            // No coordinate worth aiming at — but XCUIElement.tap() resolves
+            // an element by scrolling it into view first, and that recovery
+            // is real: until 1.9.2 every tap went through it, and refusing
+            // here turned a passing consumer flow red (measured 2026-09-04 on
+            // a section 281pt below the viewport; 1.9.2 green, 1.9.3 red).
+            // So attempt it, exactly as 1.9.2 did. A tap XCTest cannot
+            // resolve fails as its own recorded issue ("not hittable") rather
+            // than a Swift error this driver could catch, which is why the
+            // measurement goes to stderr BEFORE the attempt instead of into a
+            // thrown message after it.
+            let why = route == .noFrame
+                ? "has no frame (\(frame))"
+                : "its frame \(frame) has its center outside the app window \(app.frame)"
+            note("\(action) '\(id)': exists but isHittable == false and \(why) — no coordinate to aim at; letting XCTest resolve the element tap (it scrolls to visible)")
+            element.tap()
         }
         return route
     }
@@ -325,9 +363,24 @@ public class XCUITestActionExecutor: ActionExecutor {
         let direction = step.direction ?? "down"
         let timeout = step.timeoutInterval(default: 20.0)
 
+        // On screen, not merely present: see ScrollVisibility. The old rule
+        // (`exists && !frame.isEmpty`) accepted an element hundreds of points
+        // below the viewport and returned without swiping.
         func targetVisible() -> Bool {
             let element = findElementQuery(id: id, in: app)
-            return element.exists && (element.isHittable || !element.frame.isEmpty)
+            return ScrollVisibility.onScreen(
+                isHittable: element.isHittable, frame: element.frame, appFrame: app.frame
+            )
+        }
+
+        // What the old rule accepted. Tightening the STOP condition must not
+        // tighten the FAILURE condition: a step that used to end in silent
+        // success still ends in success, it just tries to scroll first. So
+        // this is the last word before throwing, never a reason to skip the
+        // scrolling.
+        func targetPresentWithAFrame() -> Bool {
+            let element = findElementQuery(id: id, in: app)
+            return element.exists && !element.frame.isEmpty
         }
 
         if targetVisible() {
@@ -387,6 +440,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         if try searchLeg(direction, deadline: Date().addingTimeInterval(timeout)) {
+            settleAfterScroll(id: id, in: app)
             return
         }
         // Reverse leg: grant it a real budget even when the primary leg burned
@@ -400,6 +454,19 @@ public class XCUITestActionExecutor: ActionExecutor {
         default: reverse = "up"
         }
         if try searchLeg(reverse, deadline: Date().addingTimeInterval(max(timeout / 2, 6.0))) {
+            settleAfterScroll(id: id, in: app)
+            return
+        }
+        // Both ends reached without bringing it on screen. If it is present
+        // with a frame, this is exactly what the pre-1.9.4 rule called
+        // success — keep calling it success and let the following step (a
+        // tap resolves by scrolling to visible) work as it did, but say on
+        // stderr that the scroll did not achieve it.
+        if targetPresentWithAFrame() {
+            let element = findElementQuery(id: id, in: app)
+            note("scrollUntilVisible '\(id)': scrolled both ways and it is still off the viewport "
+                + "(frame \(element.frame), window \(app.frame)) — continuing, the step that uses "
+                + "it must resolve it")
             return
         }
         throw ActionError.actionFailed(

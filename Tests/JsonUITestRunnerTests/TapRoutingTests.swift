@@ -36,6 +36,16 @@ final class TapRoutingTests: XCTestCase {
         XCTAssertEqual(TapRouting.route(isHittable: false, frame: straddling, appFrame: phone), .offscreen)
     }
 
+    func testOffscreenAndNoFrameStillReachTheElementTap() {
+        // Not a routing assertion but the contract the executor implements on
+        // top of it: neither refusal is final. ActionExecutor maps both to
+        // element.tap(), because XCTest resolves an element by scrolling it
+        // into view and that recovery carried every tap up to 1.9.2.
+        let below = CGRect(x: 0, y: 1155.67, width: 402, height: 78)
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: below, appFrame: phone), .offscreen)
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: .zero, appFrame: phone), .noFrame)
+    }
+
     func testCenterInsideTheWindowIsEnough() {
         // A frame that overlaps the edge but whose center is inside is
         // reachable (x 360..420 on a 402pt window: center 390).
