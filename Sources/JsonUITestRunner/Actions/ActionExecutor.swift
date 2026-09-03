@@ -158,14 +158,58 @@ public class XCUITestActionExecutor: ActionExecutor {
         if step.retryTapIfNoChange == true {
             // Ghost-tap mitigation: re-tap once if the hierarchy did not change
             let before = app.debugDescription
-            element.tap()
+            try tapResolvingHittability(element, id: id, action: "tap", in: app)
             Thread.sleep(forTimeInterval: 0.5)
             if app.debugDescription == before {
-                element.tap()
+                try tapResolvingHittability(element, id: id, action: "tap", in: app)
             }
         } else {
-            element.tap()
+            try tapResolvingHittability(element, id: id, action: "tap", in: app)
         }
+    }
+
+    /// Tap an element findTappableElement accepted. Acceptance is by
+    /// existence and a non-empty frame, but `XCUIElement.tap()` demands
+    /// `isHittable`, and XCTest answers false for elements it does see:
+    /// remote-process UI (PHPicker thumbnails on iOS 26.4 — exists, frame
+    /// on screen, not hittable, measured 2026-09-03) and iPad keyboard keys
+    /// (measured 2026-07-21). Both are real rects a finger can reach, so the
+    /// route is decided from what XCTest reports (TapRouting, unit-tested)
+    /// and a frame-center coordinate tap replaces the element tap when
+    /// hittability is broken. The switch is announced on stderr — a step
+    /// that went green through another route must say so — and a refusal
+    /// carries isHittable and the frame, which is what the old "not
+    /// hittable" failure never said. The keyboard path shares the decision.
+    @discardableResult
+    private func tapResolvingHittability(
+        _ element: XCUIElement, id: String, action: String, in app: XCUIApplication
+    ) throws -> TapRoute {
+        let hittable = element.isHittable
+        let frame = element.frame
+        let route = TapRouting.route(isHittable: hittable, frame: frame, appFrame: app.frame)
+        switch route {
+        case .element:
+            element.tap()
+        case .frameCenter:
+            note("\(action) '\(id)': exists but isHittable == false (frame \(frame)) — tapping the frame center instead of the element")
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        case .offscreen:
+            throw ActionError.actionFailed(
+                action: action,
+                reason: "'\(id)' exists but isHittable == false and its frame \(frame) has its center outside the app window \(app.frame) — no coordinate to tap"
+            )
+        case .noFrame:
+            throw ActionError.actionFailed(
+                action: action,
+                reason: "'\(id)' exists but isHittable == false and has no frame (\(frame)) — nothing to aim a coordinate tap at"
+            )
+        }
+        return route
+    }
+
+    /// Driver-side notice: the route a step took when it was not the obvious one.
+    private func note(_ message: String) {
+        FileHandle.standardError.write(("jsonui-test-runner: " + message + "\n").data(using: .utf8)!)
     }
 
     private func executeDoubleTap(step: TestStep, in app: XCUIApplication) throws {
@@ -561,11 +605,14 @@ public class XCUITestActionExecutor: ActionExecutor {
         let appFrame = app.frame
         for key in dismissCandidates {
             guard key.exists else { continue }
-            if key.isHittable {
+            // Same decision as `tap` (TapRouting): hittable -> the element,
+            // broken hittability with an on-screen frame -> its center.
+            switch TapRouting.route(isHittable: key.isHittable, frame: key.frame, appFrame: appFrame) {
+            case .element:
                 key.tap()
-            } else if appFrame.contains(CGPoint(x: key.frame.midX, y: key.frame.midY)) {
+            case .frameCenter:
                 key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            } else {
+            case .offscreen, .noFrame:
                 // The key's reported frame can be OFF-SCREEN garbage — the
                 // keyboard tree sometimes keeps its pre-slide-in animation
                 // frames (measured: every key ~350pt below the visible
