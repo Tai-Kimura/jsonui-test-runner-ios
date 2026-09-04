@@ -726,7 +726,10 @@ public class XCUITestActionExecutor: ActionExecutor {
         // No-op when no keyboard is on screen — the action is a precondition
         // normalizer, not an assertion. (Existence alone is not enough; see
         // keyboardIsVisible.)
-        guard keyboardIsVisible(in: app) else { return }
+        guard keyboardIsVisible(in: app) else {
+            note(HideKeyboardPath.notVisible.note)
+            return
+        }
 
         // 1. An explicit dismiss key when the keyboard has one (iPad).
         //
@@ -776,7 +779,10 @@ public class XCUITestActionExecutor: ActionExecutor {
                 // docked iPad keyboard).
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.96)).tap()
             }
-            if waitForKeyboardDismiss(in: app, timeout: 0.5) { return }
+            if waitForKeyboardDismiss(in: app, timeout: 0.5) {
+                note(HideKeyboardPath.dismissKey.note)
+                return
+            }
         }
 
         // 2. An input-accessory toolbar Done (SwiftJsonUI `doneText`).
@@ -784,7 +790,10 @@ public class XCUITestActionExecutor: ActionExecutor {
             let button = app.toolbars.buttons[label]
             if button.exists, button.isHittable {
                 button.tap()
-                if waitForKeyboardDismiss(in: app, timeout: 0.5) { return }
+                if waitForKeyboardDismiss(in: app, timeout: 0.5) {
+                    note(HideKeyboardPath.accessoryDone.note)
+                    return
+                }
             }
         }
 
@@ -806,12 +815,17 @@ public class XCUITestActionExecutor: ActionExecutor {
         start.press(forDuration: 0.05, thenDragTo: end)
 
         let keyboardGone = waitForKeyboardDismiss(in: app, timeout: 1.0)
+        let after = presentedContext(in: app)
         switch KeyboardDismissSafety.verdict(
             keyboardGone: keyboardGone,
             before: before,
-            after: presentedContext(in: app)
+            after: after
         ) {
         case .dismissed:
+            note(HideKeyboardPath.drag(
+                sheets: after.sheetCount,
+                fields: after.editableIdentifiers.count
+            ).note)
             return
         case .contextLost(let what):
             throw ActionError.actionFailed(
