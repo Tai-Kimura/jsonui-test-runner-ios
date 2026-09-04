@@ -222,6 +222,35 @@ public class XCUITestActionExecutor: ActionExecutor {
             element.tap()
         case .frameCenter:
             note("\(action) '\(id)': exists but isHittable == false (frame \(frame)) — tapping the frame center instead of the element")
+            // A coordinate tap lands on whatever is drawn at that coordinate.
+            // This branch exists for remote-process UI (a photo picker, an
+            // iPad keyboard key) where hittability is misreported and the
+            // element really is there — but the same branch is taken when the
+            // element is covered, and then the tap goes to the cover. That is
+            // measured, not theorised: a covered target under a bar opened
+            // another screen (1.9.4), and a probe reproduced it under 1.9.9.
+            //
+            // Which one is in front cannot be asked — XCUITest publishes no
+            // z-order, and no per-element owning process either (checked: 23
+            // public XCUIAutomation headers expose neither, so the pid in
+            // XCTest's own failure text is diagnostics about the query input,
+            // not an attribute a driver can read). What CAN be asked is
+            // whether anything else is at that point at all, and an empty
+            // answer rules the covered case out.
+            //
+            // It warns rather than refuses: refusing would break the shapes
+            // this branch exists for whenever a harmless rect overlaps.
+            if let others = elementsAtHitPoint(of: element, id: id, in: app), !others.isEmpty {
+                let listed = others
+                    .sorted { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+                    .prefix(ScrollDiagnosis.atPointListLimit)
+                    .map { "\($0.label) \($0.frame)" }
+                    .joined(separator: ", ")
+                note("\(action) '\(id)': ⚠️ \(others.count) other element(s) have that coordinate "
+                    + "inside their frame, smallest first: \(listed) — a coordinate tap lands on "
+                    + "whatever is drawn there, and which of these is in front is not available "
+                    + "(no z-order). If the wrong thing responds, this is why")
+            }
             element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         case .offscreen, .noFrame:
             // No coordinate worth aiming at — but XCUIElement.tap() resolves
@@ -1276,8 +1305,6 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.actionFailed(action: "tap", reason: "Text '\(targetText)' not found in element label '\(fullText)'")
         }
 
-        let frame = element.frame
-
         // Calculate the relative position of the target text within the full text
         let startIndex = fullText.distance(from: fullText.startIndex, to: range.lowerBound)
         let endIndex = fullText.distance(from: fullText.startIndex, to: range.upperBound)
@@ -1293,11 +1320,10 @@ public class XCUITestActionExecutor: ActionExecutor {
         let endRatio = CGFloat(endIndex) / CGFloat(totalLength)
         let centerRatio = (startRatio + endRatio) / 2.0
 
-        // Calculate the tap coordinate
-        let tapX = frame.minX + (frame.width * centerRatio)
-        let tapY = frame.midY
-
-        // Create coordinate and tap
+        // The tap goes through a normalized offset, so the absolute point is
+        // never needed; two locals computing it sat here unused and produced
+        // the only two warnings this file emitted, which is exactly the noise
+        // a real warning would have hidden in.
         let coordinate = element.coordinate(withNormalizedOffset: CGVector(dx: centerRatio, dy: 0.5))
         coordinate.tap()
     }
