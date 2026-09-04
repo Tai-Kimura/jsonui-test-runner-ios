@@ -525,6 +525,50 @@ final class JsonUITestRunnerTests: XCTestCase {
         XCTAssertNil(results?[3]["skipReason"])
     }
 
+    // MARK: - Results failureReason emission
+    //
+    // The classifier being right does not mean the writer prints it. This is
+    // the emission point, tested at the emission point.
+
+    func testResultsWriterEmitsFailureReason() throws {
+        let run = TestRunResult(
+            testName: "Suite",
+            caseResults: [
+                TestCaseResult(name: "not found", passed: false, duration: 0,
+                               error: ActionError.elementNotFound(id: "submit")),
+                TestCaseResult(name: "bad step", passed: false, duration: 0,
+                               error: ActionError.unknownAction(action: "wiggle")),
+                TestCaseResult(name: "passed", passed: true, duration: 0),
+                TestCaseResult(name: "skipped", passed: true, duration: 0, skipped: true,
+                               skipReason: .platform)
+            ],
+            totalDuration: 0
+        )
+        let payload = ResultsWriter.resultsJSON([run], platform: "ios")
+        let results = (payload["suites"] as? [[String: Any]])?.first?["results"] as? [[String: Any]]
+
+        XCTAssertEqual(results?[0]["failureReason"] as? String, "element-not-found")
+        XCTAssertEqual(results?[1]["failureReason"] as? String, "invalid-test")
+        // Only meaningful on a failure: the validator rejects it elsewhere,
+        // and a skipped row carrying one would claim a failure it never had.
+        XCTAssertNil(results?[2]["failureReason"])
+        XCTAssertNil(results?[3]["failureReason"])
+    }
+
+    func testAFailureWithNoErrorCarriesNoReason() throws {
+        // Absent must read as unknown, not as "no reason" — so a failure the
+        // runner could not attach an error to says nothing rather than "other".
+        let run = TestRunResult(
+            testName: "Suite",
+            caseResults: [TestCaseResult(name: "bare", passed: false, duration: 0)],
+            totalDuration: 0
+        )
+        let payload = ResultsWriter.resultsJSON([run], platform: "ios")
+        let results = (payload["suites"] as? [[String: Any]])?.first?["results"] as? [[String: Any]]
+        XCTAssertEqual(results?[0]["status"] as? String, "failed")
+        XCTAssertNil(results?[0]["failureReason"])
+    }
+
     func testArgsSubstitutionFlowOverridesScreenDefaults() throws {
         let json = """
         {

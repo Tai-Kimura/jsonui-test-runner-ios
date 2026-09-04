@@ -28,6 +28,15 @@ public enum ResultsWriter {
                 if let error = caseResult.error {
                     entry["error"] = error.localizedDescription
                 }
+                // The machine-readable half of the same fact. Derived from the
+                // error rather than set at each throw site, and only on a
+                // failed row: the validator rejects it elsewhere, and a
+                // skipped case that carried one would be claiming a failure it
+                // did not have. Absent means unknown, never "no reason".
+                if !caseResult.skipped, !caseResult.passed,
+                   let reason = FailureClassifier.classify(caseResult.error) {
+                    entry["failureReason"] = reason.rawValue
+                }
                 // Distinct skip reason (platform vs responsive gate) so a
                 // gate-caused skip never hides as an unexplained green row;
                 // plain `skip: true` skips carry no reason.
