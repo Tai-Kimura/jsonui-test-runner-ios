@@ -792,16 +792,58 @@ public class XCUITestActionExecutor: ActionExecutor {
         //    the keyboard. SwiftUI ScrollView's default scrollDismissesKeyboard
         //    (.automatic) is interactive on iPhone, so this works without app
         //    cooperation — including number-pad, which has no return key.
+        //
+        //    Strategies 1 and 2 tap a specific control, so they can only do
+        //    what they aimed at. This one acts on raw coordinates and hits
+        //    whatever is underneath: inside a presented sheet the same drag
+        //    IS the system's sheet-dismiss gesture, and the keyboard goes
+        //    away because the sheet did (measured 2026-09-02 / 09-04, four
+        //    sites). Read the context on both sides of the drag so the two
+        //    outcomes stop sharing a predicate.
+        let before = presentedContext(in: app)
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
         let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98))
         start.press(forDuration: 0.05, thenDragTo: end)
 
-        if !waitForKeyboardDismiss(in: app, timeout: 1.0) {
+        let keyboardGone = waitForKeyboardDismiss(in: app, timeout: 1.0)
+        switch KeyboardDismissSafety.verdict(
+            keyboardGone: keyboardGone,
+            before: before,
+            after: presentedContext(in: app)
+        ) {
+        case .dismissed:
+            return
+        case .contextLost(let what):
+            throw ActionError.actionFailed(
+                action: "hideKeyboard",
+                reason: what
+                    + ". The interactive scroll-dismiss drag acts on screen coordinates, and inside a "
+                    + "presented sheet it is the sheet-dismiss gesture. Dismiss the keyboard with a "
+                    + "control inside the sheet (an accessory Done), or gate the step to the platform "
+                    + "that needs it."
+            )
+        case .notDismissed:
             throw ActionError.actionFailed(
                 action: "hideKeyboard",
                 reason: "Keyboard still visible after dismiss key / accessory Done / interactive scroll-dismiss attempts"
             )
         }
+    }
+
+    /// The two cheap readings `hideKeyboard` compares across its untargeted
+    /// drag. Identifiers come from existence, not hittability — an element
+    /// scrolled out of the viewport still exists, so existence does not move
+    /// when the keyboard merely retracts.
+    private func presentedContext(in app: XCUIApplication) -> PresentedContext {
+        let sheets = allElements(app.sheets)
+        let fields = allElements(app.textFields)
+            + allElements(app.textViews)
+            + allElements(app.secureTextFields)
+        return PresentedContext(
+            sheetCount: sheets.count,
+            sheetIdentifier: sheets.first?.identifier,
+            editableIdentifiers: fields.map { $0.identifier }.filter { !$0.isEmpty }
+        )
     }
 
     private func executeScreenshot(step: TestStep, in app: XCUIApplication) throws {
