@@ -149,6 +149,97 @@ final class ScrollDiagnosisTests: XCTestCase {
         XCTAssertTrue(text.contains("\(tallWindow)"), text)
     }
 
+    // MARK: - Naming what is at the point, instead of listing what might be
+    //
+    // The covered branch printed the same four guesses whatever the geometry
+    // was, so it named "a bar that overlaps the scroll view" on a screen
+    // whose scroll container reached the window's bottom edge — no room for
+    // one. A reader took the guess for a finding and filed a layout bug
+    // against a container that was never overlapped. Two of those four can be
+    // settled from rects the driver can already read.
+
+    private let covered = CGRect(x: 23.5, y: 771.17, width: 355, height: 57)
+    /// Bottom half of the window, as an on-screen keyboard occupies it.
+    private let keyboardFrame = CGRect(x: 0, y: 500, width: 402, height: 374)
+
+    func testAKeyboardHoldingTheHitPointIsStatedNotGuessedAt() {
+        let text = ScrollDiagnosis.message(
+            id: "password_field", element: covered, viewport: viewport,
+            viewportLabel: "container 'form'", appWindow: window, keyboard: keyboardFrame)
+        XCTAssertTrue(text.contains("observed: the keyboard is at that point"), text)
+        // and it stops being offered as a guess, because it is no longer one
+        XCTAssertFalse(text.contains("the keyboard,"), text)
+    }
+
+    func testAKeyboardThatDoesNotHoldTheHitPointStaysAGuess() {
+        // Positive control for the arm above: a keyboard that is up but
+        // nowhere near the point must not be named as the cause.
+        let elsewhere = CGRect(x: 40, y: 200, width: 300, height: 44)
+        let text = ScrollDiagnosis.message(
+            id: "field", element: elsewhere, viewport: viewport,
+            viewportLabel: "container 'form'", appWindow: window, keyboard: keyboardFrame)
+        XCTAssertFalse(text.contains("the keyboard is at that point"), text)
+        XCTAssertTrue(text.contains("the keyboard,"), text)
+    }
+
+    func testNothingAtThePointIsReportedAsAFindingAndRedirectsTheGuesses() {
+        // The strong case: scanned, and the point is empty. "Covered" stops
+        // being the explanation and hittability itself becomes the suspect.
+        let text = ScrollDiagnosis.message(
+            id: "x", element: covered, viewport: viewport,
+            viewportLabel: "container 'c'", appWindow: window, atHitPoint: [])
+        XCTAssertTrue(text.contains("no other element has that point inside its frame"), text)
+        XCTAssertTrue(text.contains("unlikely to be covering"), text)
+        XCTAssertFalse(text.contains("something is drawn in front of it"), text)
+    }
+
+    func testElementsAtThePointAreListedSmallestFirstAndZOrderIsDisclaimed() {
+        let big = ScrollDiagnosis.AtPoint(label: "Other#backdrop", frame: window)
+        let small = ScrollDiagnosis.AtPoint(
+            label: "Button#confirm", frame: CGRect(x: 20, y: 760, width: 120, height: 80))
+        let text = ScrollDiagnosis.message(
+            id: "x", element: covered, viewport: viewport, viewportLabel: "container 'c'",
+            appWindow: window, atHitPoint: [big, small])
+        XCTAssertTrue(text.contains("2 element(s) have that point inside their frame"), text)
+        // Not force-unwrapped: when this arm goes red the values are absent,
+        // and `!` would crash the runner instead of failing the assertion —
+        // taking every test scheduled after it with it. Measured: the first
+        // version of this line aborted the suite at 27 of 78.
+        guard let smallIdx = text.range(of: "Button#confirm")?.lowerBound,
+              let bigIdx = text.range(of: "Other#backdrop")?.lowerBound else {
+            return XCTFail("neither rect was listed: \(text)")
+        }
+        XCTAssertTrue(smallIdx < bigIdx, "smallest first: \(text)")
+        // Frames are not z-order and the message must not let that be read in.
+        XCTAssertTrue(text.contains("does not expose z-order"), text)
+    }
+
+    func testNotScanningIsNotTheSameAsScanningAndFindingNothing() {
+        // The distinction this whole parameter exists for. Passing nil must
+        // leave the message exactly as the previous version wrote it.
+        let notScanned = ScrollDiagnosis.message(
+            id: "x", element: covered, viewport: viewport,
+            viewportLabel: "container 'c'", appWindow: window)
+        let scannedEmpty = ScrollDiagnosis.message(
+            id: "x", element: covered, viewport: viewport,
+            viewportLabel: "container 'c'", appWindow: window, atHitPoint: [])
+        XCTAssertNotEqual(notScanned, scannedEmpty)
+        XCTAssertFalse(notScanned.contains("no other element"), notScanned)
+        XCTAssertTrue(notScanned.contains("something is drawn in front of it"), notScanned)
+    }
+
+    func testTheHitPointScanOnlySpeaksForTheCoveredCase() {
+        // Outside the viewport nothing is covering it by construction, so the
+        // list would be noise attached to the wrong verdict.
+        let outside = CGRect(x: 20, y: 1362, width: 280, height: 50)
+        let text = ScrollDiagnosis.message(
+            id: "item_26", element: outside, viewport: tallViewport, viewportLabel: "c",
+            appWindow: tallWindow, atHitPoint: [], keyboard: keyboardFrame)
+        XCTAssertTrue(text.contains("OUTSIDE"), text)
+        XCTAssertFalse(text.contains("no other element has that point"), text)
+        XCTAssertFalse(text.contains("the keyboard is at that point"), text)
+    }
+
     func testWithoutAUsableWindowTheRawFrameIsUsedRatherThanNothing() {
         // A clamp needs something to clamp to. With no window rect the bit
         // falls back to the frame instead of calling everything off screen.

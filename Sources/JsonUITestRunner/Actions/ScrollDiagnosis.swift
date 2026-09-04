@@ -28,6 +28,19 @@ import CoreGraphics
 /// no test could see it. See `visibleArea(of:in:)`.
 public enum ScrollDiagnosis {
 
+    /// How many rects to name before summarising the rest. The list is there
+    /// to narrow a guess, not to dump the ancestor chain.
+    public static let atPointListLimit = 4
+
+    /// Most elements the hit-point scan will resolve before giving up.
+    ///
+    /// Each one costs a snapshot resolution and this runs on a failure path,
+    /// so it is bounded. Past the bound the scan reports NOTHING rather than
+    /// what it managed to see: a partial list reads exactly like a complete
+    /// one, and "no other element has that point" is a finding the reader
+    /// will act on.
+    public static let atPointScanCap = 120
+
     public enum Placement: Equatable {
         /// Inside the viewport that should be showing it, yet not hittable:
         /// something is in front.
@@ -83,12 +96,39 @@ public enum ScrollDiagnosis {
         return visible.contains(hitPoint) ? .withinViewport : .beyondViewport
     }
 
+    /// One element that has the hit point inside its frame.
+    ///
+    /// Frames only. XCUITest does not expose z-order, so "in front of" is not
+    /// available and is never claimed — but "is even at that point" was never
+    /// asked either, and it can be. The list this feeds replaced a fixed
+    /// sentence that named a bottom bar as a candidate on a screen whose
+    /// scroll container reached the window's bottom edge, leaving no room for
+    /// one; a reader took that guess for a finding and filed a layout bug.
+    public struct AtPoint: Equatable {
+        public let label: String
+        public let frame: CGRect
+        public init(label: String, frame: CGRect) {
+            self.label = label
+            self.frame = frame
+        }
+    }
+
+    /// - Parameters:
+    ///   - atHitPoint: elements whose frame contains the hit point, target
+    ///     excluded. `nil` means the scan did not run — which must not read
+    ///     the same as an empty list, because an empty list is a finding.
+    ///   - keyboard: the on-screen keyboard's frame, when one is up. The only
+    ///     candidate of the five that can be turned into an observation: its
+    ///     rect is available and `keyboardIsVisible` already distinguishes a
+    ///     real keyboard from the phantom that outlives it.
     public static func message(
         id: String,
         element: CGRect,
         viewport: CGRect?,
         viewportLabel: String,
-        appWindow: CGRect
+        appWindow: CGRect,
+        atHitPoint: [AtPoint]? = nil,
+        keyboard: CGRect? = nil
     ) -> String {
         let visible = visibleArea(of: viewport, in: appWindow)
         let place = placement(element: element, visible: visible)
@@ -104,10 +144,46 @@ public enum ScrollDiagnosis {
                 + "\(place == .withinViewport ? "inside" : place == .beyondViewport ? "OUTSIDE" : "unknown against")"
                 + " that visible part",
         ]
+        let hitPoint = CGPoint(x: element.midX, y: element.midY)
+        let keyboardCovers = keyboard.map { !$0.isNull && !$0.isEmpty && $0.contains(hitPoint) } ?? false
+
         switch place {
         case .withinViewport:
-            lines.append("  candidates: something is drawn in front of it — an overlay or sheet, "
-                + "the keyboard, a bar that overlaps the scroll view, another window")
+            // The keyboard is the one candidate of the five whose rect can be
+            // had, so when it holds the point that stops being a guess.
+            if keyboardCovers, let keyboard {
+                lines.append("  observed: the keyboard is at that point (keyboard \(keyboard))")
+            }
+            if let atHitPoint {
+                if atHitPoint.isEmpty {
+                    // A finding, not an absence of one: nothing is at that
+                    // point, so "covered" does not explain it.
+                    lines.append("  observed: no other element has that point inside its frame")
+                } else {
+                    let listed = atHitPoint
+                        .sorted { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+                        .prefix(atPointListLimit)
+                        .map { "\($0.label) \($0.frame)" }
+                        .joined(separator: ", ")
+                    let more = atHitPoint.count > atPointListLimit
+                        ? " (+\(atHitPoint.count - atPointListLimit) more)" : ""
+                    lines.append("  observed: \(atHitPoint.count) element(s) have that point inside "
+                        + "their frame, smallest first: \(listed)\(more)")
+                }
+            }
+            var guesses = ["an overlay or sheet", "a bar that overlaps the scroll view", "another window"]
+            if !keyboardCovers { guesses.insert("the keyboard", at: 1) }
+            if atHitPoint?.isEmpty == true {
+                lines.append("  candidates: nothing is at that point, so this is unlikely to be "
+                    + "covering — hittability may be misreported here (remote-process UI such as a "
+                    + "photo picker or a hardware-backed keyboard does that), or the element moved "
+                    + "between the frame read and the hit test")
+            } else {
+                lines.append("  candidates: something is drawn in front of it — "
+                    + guesses.joined(separator: ", ")
+                    + (atHitPoint == nil
+                        ? "" : ". Which of the listed rects is in front is not available: XCUITest does not expose z-order"))
+            }
             lines.append("  ruled out: not a scrolling problem; the container is already showing that point")
         case .beyondViewport:
             lines.append("  candidates: the container cannot bring it further (content ends, or it "

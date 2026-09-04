@@ -469,7 +469,9 @@ public class XCUITestActionExecutor: ActionExecutor {
                 ?? (viewport == nil ? "no container" : "first scroll view")
             note(ScrollDiagnosis.message(id: id, element: element.frame,
                                          viewport: viewport, viewportLabel: label,
-                                         appWindow: app.frame))
+                                         appWindow: app.frame,
+                                         atHitPoint: elementsAtHitPoint(of: element, id: id, in: app),
+                                         keyboard: visibleKeyboardFrame(in: app)))
             return
         }
         throw ActionError.actionFailed(
@@ -619,6 +621,58 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// every key ~350pt past the bottom edge, all non-hittable). Existence is
     /// therefore the wrong signal for "keyboard is up" — intersect the
     /// keyboard frame with the app frame instead.
+    /// The on-screen keyboard's frame, or nil when no keyboard is up.
+    ///
+    /// Visibility, not existence — see `keyboardIsVisible`: a phantom
+    /// keyboard element outlives the real one with its keys ~350pt below the
+    /// screen, and reporting that rect as "the keyboard is at that point"
+    /// would name a cause that is not there.
+    private func visibleKeyboardFrame(in app: XCUIApplication) -> CGRect? {
+        guard keyboardIsVisible(in: app) else { return nil }
+        return app.keyboards.firstMatch.frame
+    }
+
+    /// Elements whose frame contains the target's hit point, target excluded.
+    ///
+    /// Frames only. XCUITest does not publish z-order, so this cannot say
+    /// which one is in front — but the message it feeds used to name "a bar
+    /// that overlaps the scroll view" on a screen whose scroll container
+    /// reached the window's bottom edge, leaving no room for such a bar, and
+    /// a reader took that for a finding. Asking whether anything is even at
+    /// the point is a different question from asking what is on top, and it
+    /// is answerable.
+    ///
+    /// Returns nil when the scan could not be completed, so that "did not
+    /// look" never renders as "looked and found nothing".
+    private func elementsAtHitPoint(
+        of target: XCUIElement, id: String, in app: XCUIApplication
+    ) -> [ScrollDiagnosis.AtPoint]? {
+        let frame = target.frame
+        guard !frame.isNull, !frame.isEmpty else { return nil }
+        let hitPoint = CGPoint(x: frame.midX, y: frame.midY)
+
+        let all = app.descendants(matching: .any)
+        let total = all.count
+        guard total > 0, total <= ScrollDiagnosis.atPointScanCap else { return nil }
+
+        var found: [ScrollDiagnosis.AtPoint] = []
+        var index = 0
+        while index < total {
+            let candidate = all.element(boundBy: index)
+            index += 1
+            // Every element sharing the identifier is the target or a twin of
+            // it; neither is something drawn in front of it.
+            if candidate.identifier == id { continue }
+            let rect = candidate.frame
+            guard !rect.isNull, !rect.isEmpty, rect.contains(hitPoint) else { continue }
+            let name = candidate.identifier.isEmpty
+                ? "\(candidate.elementType)"
+                : "\(candidate.elementType)#\(candidate.identifier)"
+            found.append(ScrollDiagnosis.AtPoint(label: name, frame: rect))
+        }
+        return found
+    }
+
     private func keyboardIsVisible(in app: XCUIApplication) -> Bool {
         let keyboard = app.keyboards.firstMatch
         guard keyboard.exists else { return false }
