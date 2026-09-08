@@ -49,6 +49,25 @@ public enum ResultsWriter {
                 // attempts = total runs (1 = settled first try); flaky only
                 // on a pass that needed retries — the validator rejects
                 // flaky on failures (results.schema.json).
+                // The orientation pair. Never on a skipped row — a case that
+                // did not run has no orientation to report, the same rule the
+                // `attempts` stamp follows.
+                //
+                // ⚠️ `observedOrientation` is emitted even when nothing
+                // declared one. "Which orientation did this run in" is worth
+                // recording whether or not anyone asked for it, and its
+                // absence from the record is precisely the state the whole
+                // feature exists to end. `declaredOrientation` stays absent
+                // when nothing declared one, because a default nobody chose
+                // must not appear as a choice.
+                if !caseResult.skipped {
+                    if let declared = caseResult.declaredOrientation {
+                        entry["declaredOrientation"] = declared.rawValue
+                    }
+                    if let observed = caseResult.observedOrientation {
+                        entry["observedOrientation"] = observed.rawValue
+                    }
+                }
                 if !caseResult.skipped, let attempts = caseResult.attempts {
                     entry["attempts"] = attempts
                     if caseResult.passed && attempts > 1 {

@@ -33,6 +33,11 @@ public struct ScreenTest: Codable {
     public let source: TestSource
     public let metadata: TestMetadata
     public let platform: PlatformTarget?
+    /// Orientation this file runs in, applied once when the run starts.
+    /// Overrides the project-wide default in the installed sidecar; a
+    /// `setOrientation` step still wins for the rotation it performs, so the
+    /// order is step > this field > run default.
+    public let orientation: String?
     public let initialState: InitialState?
     public let launch: LaunchConfig?
     /// API mock scenario set applied (and the app relaunched) before the cases run
@@ -154,6 +159,11 @@ public struct FlowTest: Codable {
     public let type: String
     public let sources: [FlowTestSource]?  // Now optional (not needed when using file references)
     public let metadata: TestMetadata
+    /// Orientation this file runs in. Same contract as `ScreenTest` — declared
+    /// on both because the canonical schemas declare it on both, and a reader
+    /// honouring only one would make the key mean different things depending
+    /// on which kind of file it appeared in.
+    public let orientation: String?
     public let platform: PlatformTarget?
     public let initialState: FlowInitialState?
     public let launch: LaunchConfig?

@@ -68,6 +68,21 @@ public struct TestCaseResult {
     /// on the first run). Nil on skipped rows — a case that never ran has
     /// no attempt count (results.schema.json attempts).
     public let attempts: Int?
+    /// The orientation this case asked for, after the whole chain: a
+    /// `setOrientation` step, else the file's `orientation`, else the run
+    /// default for this device's tier. Nil when nothing declared one — which
+    /// is a real state (the device stayed as it booted), not "portrait".
+    public let declaredOrientation: Orientation?
+    /// The orientation the device was ACTUALLY in, asked of the device.
+    ///
+    /// ⚠️ Reported separately from `declaredOrientation` on purpose. Derived
+    /// from the declaration the two would agree by construction and measure
+    /// nothing; the disagreement is the whole reason the pair exists. It is
+    /// not hypothetical — the Android driver mapped "portrait" onto a
+    /// natural-relative rotation, so on a tablet whose natural orientation is
+    /// landscape a run that declared portrait executed in landscape and passed
+    /// with nothing recording the difference.
+    public let observedOrientation: Orientation?
 
     public init(
         name: String,
@@ -78,7 +93,9 @@ public struct TestCaseResult {
         skipped: Bool = false,
         skipReason: SkipReason? = nil,
         warnings: [String] = [],
-        attempts: Int? = nil
+        attempts: Int? = nil,
+        declaredOrientation: Orientation? = nil,
+        observedOrientation: Orientation? = nil
     ) {
         self.name = name
         self.passed = passed
@@ -89,9 +106,16 @@ public struct TestCaseResult {
         self.skipReason = skipReason
         self.warnings = warnings
         self.attempts = attempts
+        self.declaredOrientation = declaredOrientation
+        self.observedOrientation = observedOrientation
     }
 
     /// Copy with the attempts stamp (results.schema.json attempts).
+    ///
+    /// ⚠️ Every field is listed. A copy helper that names a subset drops
+    /// whatever is added after it was written, silently and only on the path
+    /// that uses it — here, only on cases that needed a retry, which is the
+    /// hardest population to notice a gap in.
     func stamping(attempts: Int) -> TestCaseResult {
         TestCaseResult(
             name: name,
@@ -102,7 +126,26 @@ public struct TestCaseResult {
             skipped: skipped,
             skipReason: skipReason,
             warnings: warnings,
-            attempts: attempts
+            attempts: attempts,
+            declaredOrientation: declaredOrientation,
+            observedOrientation: observedOrientation
+        )
+    }
+
+    /// Copy with the orientation pair, recorded once the case has finished.
+    func stamping(declared: Orientation?, observed: Orientation?) -> TestCaseResult {
+        TestCaseResult(
+            name: name,
+            passed: passed,
+            duration: duration,
+            error: error,
+            screenshots: screenshots,
+            skipped: skipped,
+            skipReason: skipReason,
+            warnings: warnings,
+            attempts: attempts,
+            declaredOrientation: declared,
+            observedOrientation: observed
         )
     }
 }
@@ -142,6 +185,12 @@ public class JsonUITestRunner {
     /// captures per test/case (parity with android/web `failure_<test>_<case>`).
     private var currentTestName = ""
     private var currentCaseName = ""
+    /// Run-scoped defaults, read once from the installed bundle.
+    ///
+    /// Read once because it cannot change during a run and because a failure
+    /// to read it should be reported once rather than per case. Not folded to
+    /// an empty table on failure — see `RunDefaults.Load`.
+    private lazy var runDefaults: RunDefaults.Load = RunDefaults.load()
 
     public init(
         app: XCUIApplication,
@@ -281,6 +330,27 @@ public class JsonUITestRunner {
             app.launch()
         }
 
+        // Orientation for this run, applied ONCE and BEFORE setup.
+        //
+        // Before setup and before the readiness gate on purpose: applied after
+        // them, both would have run in whatever orientation the device booted
+        // in, and the run would not be the run the file asked for. Nothing is
+        // applied when nothing declared one — the device is left as it booted,
+        // which is a real state and is reported as `declaredOrientation`
+        // absent rather than as a default nobody chose.
+        let runDeclaredOrientation = OrientationRuntime.resolveDeclared(
+            fileOrientation: screenTest.orientation,
+            defaults: runDefaults,
+            tier: OrientationRuntime.tier(
+                horizontalSizeClass: ResponsiveRuntime
+                    .currentEnvironment(app: app).horizontalSizeClass,
+                declaredTiers: runDefaults.declaredTiers
+            )
+        )
+        if let runDeclaredOrientation {
+            OrientationRuntime.apply(runDeclaredOrientation)
+        }
+
         // Run setup once. If it throws, every case is recorded as failed but
         // teardown still runs (§7 teardown guarantee).
         var setupError: Error? = nil
@@ -328,7 +398,16 @@ public class JsonUITestRunner {
             }
 
             let result = runTestCaseWithRetries(testCase)
-            caseResults.append(result)
+            // Stamped AFTER the case, never before: `observed` has to be the
+            // orientation the case actually finished in, and `declared` has to
+            // include a `setOrientation` step the case performed. Only on rows
+            // that ran — a skipped case has no orientation to report, the same
+            // reason `attempts` is absent there.
+            caseResults.append(result.stamping(
+                declared: OrientationRuntime.declaredForCase(
+                    steps: testCase.steps, runDeclared: runDeclaredOrientation),
+                observed: OrientationRuntime.observe(app: app)
+            ))
 
             if !result.passed && !config.continueOnFailure {
                 break
