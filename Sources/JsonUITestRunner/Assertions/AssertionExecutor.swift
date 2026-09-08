@@ -193,7 +193,6 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: marker, in: app)
             guard element.exists else { return false }
-            if element.isHittable { return true }
             // Covered — but by WHAT? isHittable alone cannot tell a sheet
             // from the app's own overlay, and the difference is the whole
             // question. The marker sits inside the generated view, so any
@@ -203,7 +202,27 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             // contrast, is another SCREEN and brings its own marker.
             //
             // So: still displayed unless something else claims to be.
-            return ScreenMarker.hittableScreens(in: app, excluding: screenId).isEmpty
+            //
+            // ⚠️ The two questions are asked in THIS order, and the order is
+            // the fix. Written as `if element.isHittable { return true }`
+            // first, the fallback below was unreachable whenever XCUITest
+            // could not COMPUTE hittability: "Activation point invalid and no
+            // suggested hit points based on element frame" is recorded as a
+            // test failure rather than returned as `false`, so the most
+            // thoroughly covered case — the one this fallback exists for —
+            // failed on its way to the rescue. Reported from a consumer face,
+            // reproducing on a tablet lane in two consecutive runs 0.3s apart
+            // while the same 75 cases passed on phone.
+            //
+            // `screenIsDisplayed` is outcome-identical to the old order (see
+            // its truth table and the arms that pin it), so this changes no
+            // verdict — it only stops asking a question whose failure to
+            // answer was being treated as a No.
+            return ScreenMarker.screenIsDisplayed(
+                noOtherScreenIsHittable:
+                    ScreenMarker.hittableScreens(in: app, excluding: screenId).isEmpty,
+                markerIsHittable: element.isHittable
+            )
         } onTimeout: {
             AssertionError.assertionFailed(
                 assertion: "screen",

@@ -5,6 +5,39 @@ import XCTest
 /// Tests never spell the marker — they name a screen and the driver resolves
 /// it here. Canon: jsonui-cli `shared/core/screen_identity.json`.
 enum ScreenMarker {
+
+    /// Is the named screen displayed, given the two facts `assertScreen` has?
+    ///
+    /// Truth table — identical to the order this replaced, which is the point:
+    ///
+    ///     markerIsHittable   otherScreenHittable   displayed
+    ///     true               no                    true
+    ///     true               yes                   true
+    ///     false              no                    true
+    ///     false              yes                   false
+    ///
+    /// ⚠️ `markerIsHittable` is an autoclosure and is NOT evaluated when no
+    /// other screen claims to be hittable. That is the whole reason this
+    /// function exists. XCUITest does not return `false` when it cannot
+    /// compute hittability — it records a test failure ("Activation point
+    /// invalid and no suggested hit points based on element frame") — so
+    /// asking first made the most-covered case fail on its way to the
+    /// fallback written for it. Asking the cheap, decisive question first
+    /// removes the question in exactly the shape that could not answer it.
+    ///
+    /// It does NOT claim to remove every instance: when another screen IS
+    /// hittable the marker is still consulted, and that call can still fail
+    /// to compute. Whether the reported consumer red disappears is unverified
+    /// here — reproducing it needs that face's app on a tablet — so what is
+    /// claimed is the equivalence and the removed evaluation, nothing more.
+    static func screenIsDisplayed(
+        noOtherScreenIsHittable: Bool,
+        markerIsHittable: @autoclosure () -> Bool
+    ) -> Bool {
+        if noOtherScreenIsHittable { return true }
+        return markerIsHittable()
+    }
+
     static let prefix = "__screen_"
 
     static func identifier(for screenId: String) -> String {
