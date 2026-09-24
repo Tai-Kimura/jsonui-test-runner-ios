@@ -1015,22 +1015,31 @@ public class XCUITestActionExecutor: ActionExecutor {
         let selectBox = try findElement(id: id, in: app)
         selectBox.tap()
 
-        // Step 2: Wait for the picker to appear
+        // Step 2: Wait for either picker, together, for one budget — and for it
+        // to become hittable. See PickerSheetWait for what the two sequential
+        // waits used to miss. The budget is twice the step timeout: what the
+        // two waits spent before failing, so a sheet that never comes fails no
+        // later than it did, and one that comes is taken as soon as it does.
         let pickerView = app.descendants(matching: .any).matching(identifier: "sjui_x7q_picker").firstMatch
         let datePicker = app.descendants(matching: .any).matching(identifier: "sjui_x7q_datePicker").firstMatch
-
-        let pickerAppeared = pickerView.waitForExistence(timeout: timeout)
-        let datePickerAppeared = datePicker.waitForExistence(timeout: timeout)
-
-        guard pickerAppeared || datePickerAppeared else {
-            throw ActionError.actionFailed(action: "selectOption", reason: "Picker sheet did not appear within \(Int(timeout * 1000))ms")
+        let candidates = [pickerView, datePicker]
+        let budget = timeout * 2
+        let wait = PickerSheetWait()
+        let outcome = wait.run(
+            exists: candidates.map { candidate in { candidate.exists } },
+            hittable: { candidates[$0].isHittable },
+            budget: budget,
+            sleep: { Thread.sleep(forTimeInterval: $0) },
+            now: { Date() })
+        if let reason = wait.failureReason(outcome, budget: budget) {
+            throw ActionError.actionFailed(action: "selectOption", reason: reason)
         }
 
         // Step 3: Select the option
-        if pickerAppeared && pickerView.isHittable {
+        if outcome == .ready(0) {
             // Normal picker (UIPickerView)
             try selectPickerValue(pickerView: pickerView, step: step, in: app)
-        } else if datePickerAppeared && datePicker.isHittable {
+        } else {
             // Date picker - select using ISO format value
             try selectDatePickerValue(datePicker: datePicker, step: step, in: app)
         }
