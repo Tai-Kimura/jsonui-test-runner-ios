@@ -310,6 +310,7 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         let element = try findTypableElement(id: id, in: app)
         element.tap()
+        try focusForTyping(element, action: "input", id: id, in: app, retap: { element.tap() })
 
         // `input` SETS the field value (parity with the web driver's
         // Playwright fill() and Android's setText): clear existing text first.
@@ -324,11 +325,53 @@ public class XCUITestActionExecutor: ActionExecutor {
             // Caret position after tap() is unspecified (TextEditor tends to
             // put it at the start): tap the bottom-right of the element to
             // move the caret to the end, then backspace through everything.
-            element.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.9)).tap()
+            let caretToEnd = element.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.9))
+            caretToEnd.tap()
+            // The re-tap here is the caret tap, not a centre tap: a centre
+            // tap would put the caret mid-text and the backspaces below
+            // would leave the tail behind.
+            try focusForTyping(element, action: "input", id: id, in: app, retap: { caretToEnd.tap() })
             let deleteString = String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count)
             element.typeText(deleteString)
         }
         element.typeText(value)
+    }
+
+    /// Keyboard focus on the field `id` names, or on something inside it —
+    /// the question `typeText` asks before it types. Its log shows the form:
+    /// "Elements containing elements matching predicate 'hasKeyboardFocus
+    /// == 1'", and `containing` counts the element itself (measured: 1 for a
+    /// focused TextField with no focused descendant). nil when this XCTest
+    /// cannot say.
+    ///
+    /// `hasKeyboardFocus` is not in XCTest's public headers. It is asked only
+    /// when the element says it has the attribute, so an XCTest without it
+    /// keeps the old behaviour instead of raising. Measured on Xcode 26.6 /
+    /// iOS 26.5: 0 before the tap, 1 after, 0 after a return ends editing.
+    private func keyboardFocus(of element: XCUIElement, id: String,
+                               in app: XCUIApplication) -> Bool? {
+        guard element.responds(to: NSSelectorFromString("hasKeyboardFocus")) else { return nil }
+        return app.descendants(matching: element.elementType).matching(identifier: id)
+            .containing(NSPredicate(format: "hasKeyboardFocus == true")).count > 0
+    }
+
+    /// Wait for the tap the caller made to deliver focus, tap again if it
+    /// did not, and stop with the driver's reason rather than XCTest's if it
+    /// never does. See `FocusForTyping` for why a tap is not enough.
+    private func focusForTyping(_ element: XCUIElement, action: String, id: String,
+                                in app: XCUIApplication, retap: () -> Void) throws {
+        let policy = FocusForTyping()
+        let outcome = policy.run(
+            isFocused: { keyboardFocus(of: element, id: id, in: app) },
+            tap: retap,
+            sleep: { Thread.sleep(forTimeInterval: $0) },
+            now: { Date() })
+        if let note = policy.note(outcome, action: action, id: id) {
+            print(note)
+        }
+        if let reason = policy.failureReason(outcome, id: id) {
+            throw ActionError.actionFailed(action: action, reason: reason)
+        }
     }
 
     /// Type into whatever currently holds keyboard focus — no element id.
@@ -337,6 +380,13 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// established app-side (auto-focus or a prior tap on a visible container),
     /// then this sends the characters via the keyboard. Requires the keyboard
     /// to be up; XCUIApplication.typeText throws "no keyboard focus" otherwise.
+    ///
+    /// ⚠️ NOT GUARDED BY `focusForTyping`, ON PURPOSE. `input` and `clear`
+    /// name the field, so they can read its focus and tap it again. This
+    /// action exists for the field that cannot be named — often one that is
+    /// not in the accessibility tree at all — so a focus reading here would
+    /// be absent exactly where the action is used, and waiting on it would
+    /// slow or break the case it is for. It types as it always did.
     private func executeTypeText(step: TestStep, in app: XCUIApplication) throws {
         guard let value = step.value else {
             throw ActionError.missingParameter(action: "typeText", parameter: "value")
@@ -351,6 +401,7 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         let element = try findTypableElement(id: id, in: app)
         element.tap()
+        try focusForTyping(element, action: "clear", id: id, in: app, retap: { element.tap() })
 
         // Select all and delete
         if let stringValue = element.value as? String, !stringValue.isEmpty {
