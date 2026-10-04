@@ -20,6 +20,9 @@ import XCTest
 ///   stays out of `frames`: which element it names cannot be told.
 /// - What was not found is absent. The reader takes the declared ids from the
 ///   layout, so a missing id is never written as a zero frame.
+/// - The frames are read one identifier at a time (`elements(of:ids:)`), never
+///   from a hierarchy snapshot, which draws the home indicator into the next
+///   screenshot.
 public enum FrameRecorder {
 
     public struct Frame: Codable, Equatable {
@@ -113,17 +116,25 @@ public enum FrameRecorder {
         )
     }
 
-    /// Every element in the application that carries an identifier, from a
-    /// single snapshot of the hierarchy (one query, not one per element).
-    public static func elements(of app: XCUIApplication) throws -> [(id: String, frame: CGRect)] {
+    /// The frames of the elements carrying these identifiers: one query per
+    /// identifier, every element that answers it (so a duplicate is seen and
+    /// named by `record`). An identifier no element carries is absent.
+    ///
+    /// Not app.snapshot(): reading the whole hierarchy in one snapshot made
+    /// the simulator draw its home indicator, which the conformance
+    /// screenshots never show, so 110 of 178 pictures taken after it moved
+    /// (pixel-measured on SwiftJsonUI's ConformanceHost, iOS 26.5; a sleep of
+    /// the snapshot's 3.8 ms left all 178 identical, so it is the snapshot,
+    /// not the time). One query per identifier, as a `waitFor` makes, left
+    /// all 178 identical, at a median 114.5 ms per fixture.
+    public static func elements(of app: XCUIApplication, ids: [String]) -> [(id: String, frame: CGRect)] {
         var found: [(id: String, frame: CGRect)] = []
-        func walk(_ snapshot: XCUIElementSnapshot) {
-            if !snapshot.identifier.isEmpty {
-                found.append((snapshot.identifier, snapshot.frame))
+        for id in Set(ids) where !id.isEmpty {
+            let query = app.descendants(matching: .any).matching(identifier: id)
+            for index in 0..<query.count {
+                found.append((id, query.element(boundBy: index).frame))
             }
-            snapshot.children.forEach(walk)
         }
-        walk(try app.snapshot())
         return found
     }
 
