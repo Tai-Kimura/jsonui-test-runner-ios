@@ -48,6 +48,10 @@ public enum FrameRecorder {
         public let frames: [String: Frame]
         /// Omitted when no identifier was found twice.
         public let duplicates: [String]?
+        /// Ids read from their own element because no `frame:<id>` measuring
+        /// element was found (`layoutElements(of:ids:)`). Omitted when none.
+        /// jsonui-cli's gate fails on any: the frame is not the layout box.
+        public let fallbacks: [String]?
     }
 
     public enum RecordError: Error, Equatable, CustomStringConvertible {
@@ -66,6 +70,11 @@ public enum FrameRecorder {
 
     public static let schemaVersion = 1
     public static let source = "xcuielement-frame"
+    /// The source when the frames come from the `frame:<id>` measuring
+    /// elements (SwiftJsonUI's jsonUIConformanceFrame), the layout boxes.
+    public static let layoutProbeSource = "xcuielement-layout-probe"
+    /// The identifier prefix of a measuring element.
+    public static let layoutProbePrefix = "frame:"
 
     /// The record for these elements: `(identifier, frame in points)` as read,
     /// in any order. Elements with an empty identifier are not recorded.
@@ -83,7 +92,9 @@ public enum FrameRecorder {
         elements: [(id: String, frame: CGRect)],
         rootId: String = "root",
         rootFrame: CGRect? = nil,
-        platform: String = "ios"
+        platform: String = "ios",
+        source: String = FrameRecorder.source,
+        fallbacks: [String] = []
     ) throws -> Record {
         var byId: [String: [CGRect]] = [:]
         for element in elements where !element.id.isEmpty {
@@ -112,7 +123,8 @@ public enum FrameRecorder {
             source: source,
             root: rounded(root),
             frames: frames,
-            duplicates: duplicates.isEmpty ? nil : duplicates.sorted()
+            duplicates: duplicates.isEmpty ? nil : duplicates.sorted(),
+            fallbacks: fallbacks.isEmpty ? nil : Array(Set(fallbacks)).sorted()
         )
     }
 
@@ -136,6 +148,30 @@ public enum FrameRecorder {
             }
         }
         return found
+    }
+
+    /// The layout boxes of these identifiers: the `frame:<id>` measuring
+    /// element where the host made one, else the id's own element, named in
+    /// `fallbacks`. XCUIElement.frame of the id's own element is the extent
+    /// of what was drawn, not the layout box: a background touching the top
+    /// paints into the safe area and reads 62 taller, and a container with no
+    /// background reads as the union of its children (SwiftJsonUI
+    /// ConformanceHost, iOS 26.5, 2026-10-05). One query per identifier, as
+    /// `elements(of:ids:)`.
+    public static func layoutElements(of app: XCUIApplication, ids: [String]) -> (elements: [(id: String, frame: CGRect)], fallbacks: [String]) {
+        var found: [(id: String, frame: CGRect)] = []
+        var fallbacks: [String] = []
+        for id in Set(ids) where !id.isEmpty {
+            let probe = app.descendants(matching: .any).matching(identifier: layoutProbePrefix + id)
+            if probe.count > 0 {
+                for index in 0..<probe.count { found.append((id, probe.element(boundBy: index).frame)) }
+                continue
+            }
+            let own = app.descendants(matching: .any).matching(identifier: id)
+            if own.count > 0 { fallbacks.append(id) }
+            for index in 0..<own.count { found.append((id, own.element(boundBy: index).frame)) }
+        }
+        return (found, fallbacks)
     }
 
     /// The record as JSON, keys sorted so two runs of the same drawing write

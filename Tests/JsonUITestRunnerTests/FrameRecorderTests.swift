@@ -95,4 +95,21 @@ final class FrameRecorderTests: XCTestCase {
             with: FrameRecorder.encode(FrameRecorder.record(fixture: "f", elements: drawn + [("anchor", .zero)]))) as! [String: Any]
         XCTAssertEqual(withDuplicate["duplicates"] as? [String], ["anchor"])
     }
+
+    /// The layout-probe source is written as given, and `fallbacks` only when
+    /// an id was read from its own element (frames.schema.json `fallbacks`).
+    func testTheSourceAndTheFallbacksAreWrittenAsGiven() throws {
+        let probed = try JSONSerialization.jsonObject(
+            with: FrameRecorder.encode(FrameRecorder.record(
+                fixture: "f", elements: drawn, source: FrameRecorder.layoutProbeSource))) as! [String: Any]
+        XCTAssertEqual(probed["source"] as? String, "xcuielement-layout-probe")
+        XCTAssertNil(probed["fallbacks"])
+
+        let fellBack = try JSONSerialization.jsonObject(
+            with: FrameRecorder.encode(FrameRecorder.record(
+                fixture: "f", elements: drawn, source: FrameRecorder.layoutProbeSource,
+                fallbacks: ["target", "anchor", "target"]))) as! [String: Any]
+        XCTAssertEqual(fellBack["fallbacks"] as? [String], ["anchor", "target"])
+        XCTAssertEqual(FrameRecorder.layoutProbePrefix, "frame:")
+    }
 }
