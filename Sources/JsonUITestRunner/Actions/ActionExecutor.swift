@@ -449,6 +449,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         func targetVisible() -> Bool {
             let element = findElementQuery(id: id, in: app)
             return element.exists && ScrollVisibility.canStopScrolling(isHittable: element.isHittable)
+                && VisibleFrame.hasArea(element.frame)
         }
 
         // What the old rule accepted. Tightening the STOP condition must not
@@ -458,7 +459,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // scrolling.
         func targetPresentWithAFrame() -> Bool {
             let element = findElementQuery(id: id, in: app)
-            return element.exists && !element.frame.isEmpty
+            return element.exists && VisibleFrame.hasArea(element.frame)
         }
 
         if targetVisible() {

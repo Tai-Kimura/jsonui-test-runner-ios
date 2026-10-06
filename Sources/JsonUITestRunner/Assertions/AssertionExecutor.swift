@@ -237,10 +237,12 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.missingParameter(assertion: "visible", parameter: "id")
         }
         // SwiftUI accessibility *containers* report isHittable == false because
-        // hit-testing resolves to a child — fall back to a non-empty frame.
+        // hit-testing resolves to a child, so the frame decides: one with an
+        // area (VisibleFrame — at least 1pt each way; an empty container's
+        // 0.5pt anchor is not).
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: id, in: app)
-            return element.exists && (element.isHittable || !element.frame.isEmpty)
+            return element.exists && VisibleFrame.hasArea(element.frame)
         } onTimeout: {
             AssertionError.assertionFailed(assertion: "visible", expected: "visible", actual: "not visible for '\(id)'")
         }
@@ -252,7 +254,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         }
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: id, in: app)
-            return !(element.exists && element.isHittable)
+            return !(element.exists && element.isHittable && VisibleFrame.hasArea(element.frame))
         } onTimeout: {
             AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "still visible for '\(id)'")
         }
@@ -446,7 +448,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     /// Instant visibility check (no waiting) used by conditions
     private func isInstantlyVisible(id: String, in app: XCUIApplication) -> Bool {
         let element = findElementQuery(id: id, in: app)
-        return element.exists && (element.isHittable || !element.frame.isEmpty)
+        return element.exists && VisibleFrame.hasArea(element.frame)
     }
 
     private func valuesMatch(expected: AnyCodable, actual: Any) -> Bool {

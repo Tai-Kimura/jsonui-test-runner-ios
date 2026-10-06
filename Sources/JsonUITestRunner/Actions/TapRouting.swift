@@ -71,3 +71,24 @@ public enum TapRouting {
         return appFrame.contains(center) ? .frameCenter : .offscreen
     }
 }
+
+/// Whether a frame has a visible area: at least 1pt on BOTH sides.
+///
+/// SwiftJsonUI gives every accessibility container a 0.5pt anchor child (an
+/// `.overlay` Color.clear marked `.accessibilityElement(children: .ignore)`),
+/// so a container with nothing in it still reports a frame — measured on iOS
+/// 26.5: an empty flow Collection read {16,131}{0.667 x 0.667} (the 0.5pt
+/// rounded to pixels), isHittable true, so `visible` was true for a box that
+/// draws nothing. Android does not find such an element visible (its drawn
+/// box is 0 x 0), and by the user's ruling (2026-10-06) neither does this
+/// driver: a frame under 1pt on either side is not visible. `exists` is
+/// unaffected — the element is still there.
+public enum VisibleFrame {
+    /// The smallest side, in points, that counts as something drawn.
+    public static let minimumSide: CGFloat = 1
+
+    public static func hasArea(_ frame: CGRect) -> Bool {
+        if frame.isNull || frame.isInfinite { return false }
+        return frame.width >= minimumSide && frame.height >= minimumSide
+    }
+}
