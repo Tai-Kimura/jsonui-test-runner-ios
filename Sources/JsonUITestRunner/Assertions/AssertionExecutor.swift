@@ -114,6 +114,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             try assertVisible(step: step, timeout: timeout, in: app)
         case "notVisible":
             try assertNotVisible(step: step, timeout: timeout, in: app)
+        case "hidden":
+            try assertHidden(step: step, timeout: timeout, in: app)
         case "enabled":
             try assertEnabled(step: step, timeout: timeout, in: app)
         case "disabled":
@@ -164,6 +166,9 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             return false
         }
         if let notVisibleId = condition.notVisible, isInstantlyVisible(id: notVisibleId, in: app) {
+            return false
+        }
+        if let hiddenId = condition.hidden, !isHidden(id: hiddenId, in: app) {
             return false
         }
         if let stateCondition = condition.state {
@@ -273,6 +278,34 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "\(reason) for '\(id)'")
         }
+    }
+
+    /// `hidden`: not drawn, wherever it is — no element has the id. An element
+    /// scrolled off screen, under a sheet, at opacity 0 or disabled is in
+    /// XCUITest's tree (exists), so `hidden` fails on it; `notVisible` is the
+    /// viewport's question, this is not. SwiftJsonUI takes a "gone" view out
+    /// of the tree and, from 10.29.16, an "invisible" / `hidden: true` one
+    /// too (accessibilityRepresentation); before 10.29.16 a bound invisible /
+    /// hidden view and a static `hidden: true` one stayed in it and read as
+    /// shown. Measured 2026-10-15 (iOS 26.2, SwiftJsonUI 10.29.16): the same
+    /// answer as Android's semantics tree and web's checkVisibility on every
+    /// shape — plain, opacity 0, disabled, 3000pt below, under a sheet shown;
+    /// invisible, gone, hidden, their bindings, a child of either parent,
+    /// absent hidden.
+    private func assertHidden(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {
+        guard let id = step.id else {
+            throw AssertionError.missingParameter(assertion: "hidden", parameter: "id")
+        }
+        try pollUntil(timeout: timeout) {
+            self.isHidden(id: id, in: app) ? nil : "shown"
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "hidden", expected: "hidden", actual: "\(reason) for '\(id)'")
+        }
+    }
+
+    /// The `hidden` predicate, once (also `when: { hidden }`).
+    private func isHidden(id: String, in app: XCUIApplication) -> Bool {
+        !findElementQuery(id: id, in: app).exists
     }
 
     private func assertEnabled(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {

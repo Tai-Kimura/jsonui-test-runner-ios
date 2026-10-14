@@ -65,6 +65,9 @@ public struct WhenCondition: Codable {
     public let visible: String?
     /// Instant check: element is currently absent or invisible
     public let notVisible: String?
+    /// Instant check: element is not drawn (absent, gone or invisible),
+    /// wherever it is — off screen or under a sheet it is drawn
+    public let hidden: String?
     /// Current platform matches
     public let platform: PlatformTarget?
     /// ViewModel state matches (requires a state provider)
@@ -80,11 +83,12 @@ public struct WhenCondition: Codable {
     public let unknownKeys: [String]
 
     /// Condition keys this driver knows how to evaluate.
-    private static let knownKeys: Set<String> = ["visible", "notVisible", "platform", "state", "responsive"]
+    private static let knownKeys: Set<String> = ["visible", "notVisible", "hidden", "platform", "state", "responsive"]
 
     private enum CodingKeys: String, CodingKey {
         case visible
         case notVisible
+        case hidden
         case platform
         case state
         case responsive
@@ -102,6 +106,7 @@ public struct WhenCondition: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.visible = try container.decodeIfPresent(String.self, forKey: .visible)
         self.notVisible = try container.decodeIfPresent(String.self, forKey: .notVisible)
+        self.hidden = try container.decodeIfPresent(String.self, forKey: .hidden)
         self.platform = try container.decodeIfPresent(PlatformTarget.self, forKey: .platform)
         self.state = try container.decodeIfPresent(StateCondition.self, forKey: .state)
         self.responsive = try container.decodeIfPresent(ResponsiveCondition.self, forKey: .responsive)

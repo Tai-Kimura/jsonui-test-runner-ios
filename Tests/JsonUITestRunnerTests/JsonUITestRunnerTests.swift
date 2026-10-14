@@ -230,6 +230,18 @@ final class JsonUITestRunnerTests: XCTestCase {
         XCTAssertEqual(unknown.visible, "sidebar")
     }
 
+    func testWhenConditionDecodesHidden() throws {
+        // `hidden` is a known key: before, it was captured as unknown and the
+        // gated step was skipped (fail-safe), whatever the screen showed.
+        let json = """
+        { "hidden": "error_banner" }
+        """.data(using: .utf8)!
+        let condition = try JSONDecoder().decode(WhenCondition.self, from: json)
+        XCTAssertTrue(condition.unknownKeys.isEmpty)
+        XCTAssertEqual(condition.hidden, "error_banner")
+        XCTAssertNil(condition.notVisible)
+    }
+
     // MARK: - Responsive decoding
 
     func testWhenConditionDecodesResponsive() throws {
