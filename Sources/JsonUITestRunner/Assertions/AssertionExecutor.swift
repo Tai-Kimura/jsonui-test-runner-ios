@@ -22,6 +22,10 @@ public enum AssertionError: Error, LocalizedError {
     case assertionFailed(assertion: String, expected: String, actual: String)
     case stateNotAccessible(path: String)
     case screenshotUnavailable(reason: String)
+    /// An auto-waiting assertion whose reason changed while it waited: the
+    /// failure it ended on, followed by every reason with its span
+    /// (ReasonHistory).
+    indirect case timedOut(AssertionError, history: String)
 
     public var errorDescription: String? {
         switch self {
@@ -37,6 +41,8 @@ public enum AssertionError: Error, LocalizedError {
             return "Cannot access ViewModel state at path: '\(path)'"
         case .screenshotUnavailable(let reason):
             return "Screenshot assertion unavailable: \(reason)"
+        case .timedOut(let last, let history):
+            return "\(last.errorDescription ?? "")\n\(history)"
         }
     }
 }
@@ -50,7 +56,8 @@ public protocol ViewModelStateProvider {
 ///
 /// All element assertions auto-wait: they poll the condition every 100ms until it
 /// holds or the timeout (step.timeout ?? defaultTimeout) elapses, then throw
-/// AssertionError with the last-observed value.
+/// AssertionError with the last-observed reason — and, when the reason changed
+/// while waiting, every reason with its span (ReasonHistory).
 public class XCUITestAssertionExecutor: AssertionExecutor {
 
     /// Poll interval for auto-wait assertions
@@ -192,7 +199,9 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         let marker = ScreenMarker.identifier(for: screenId)
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: marker, in: app)
-            guard element.exists else { return false }
+            // The diagnosis is taken once, at timeout (ScreenMarker.diagnosis);
+            // a look only says "not yet", so the history is one segment.
+            guard element.exists else { return "not displayed" }
             // Covered — but by WHAT? isHittable alone cannot tell a sheet
             // from the app's own overlay, and the difference is the whole
             // question. The marker sits inside the generated view, so any
@@ -222,8 +231,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
                 noOtherScreenIsHittable:
                     ScreenMarker.hittableScreens(in: app, excluding: screenId).isEmpty,
                 markerIsHittable: element.isHittable
-            )
-        } onTimeout: {
+            ) ? nil : "not displayed"
+        } onTimeout: { _ in
             AssertionError.assertionFailed(
                 assertion: "screen",
                 expected: "screen '\(screenId)' displayed",
@@ -242,9 +251,9 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         // SwiftUI accessibility *containers* report it false because
         // hit-testing resolves to a child.
         try pollUntil(timeout: timeout) {
-            ViewportVisibility.isVisible(id: id, in: app)
-        } onTimeout: {
-            AssertionError.assertionFailed(assertion: "visible", expected: "visible", actual: "not visible for '\(id)'")
+            ViewportVisibility.notVisibleReason(id: id, in: app)
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "visible", expected: "visible", actual: "\(reason) for '\(id)'")
         }
     }
 
@@ -260,9 +269,9 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         // confirmationDialog is not visible by the predicate itself
         // (ViewportVisibility), not by hit-testing.
         try pollUntil(timeout: timeout) {
-            !ViewportVisibility.isVisible(id: id, in: app)
-        } onTimeout: {
-            AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "still visible for '\(id)'")
+            ViewportVisibility.isVisible(id: id, in: app) ? "still visible" : nil
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "\(reason) for '\(id)'")
         }
     }
 
@@ -272,9 +281,10 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         }
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: id, in: app)
-            return element.exists && element.isEnabled
-        } onTimeout: {
-            AssertionError.assertionFailed(assertion: "enabled", expected: "enabled", actual: "disabled for '\(id)'")
+            guard element.exists else { return "does not exist" }
+            return element.isEnabled ? nil : "disabled"
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "enabled", expected: "enabled", actual: "\(reason) for '\(id)'")
         }
     }
 
@@ -284,9 +294,10 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         }
         try pollUntil(timeout: timeout) {
             let element = self.findElementQuery(id: id, in: app)
-            return element.exists && !element.isEnabled
-        } onTimeout: {
-            AssertionError.assertionFailed(assertion: "disabled", expected: "disabled", actual: "enabled for '\(id)'")
+            guard element.exists else { return "does not exist" }
+            return element.isEnabled ? "enabled" : nil
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "disabled", expected: "disabled", actual: "\(reason) for '\(id)'")
         }
     }
 
@@ -317,13 +328,12 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             return false
         }
 
-        var actualText = currentText()
         try pollUntil(timeout: timeout) {
-            actualText = currentText()
-            return matches(actualText)
-        } onTimeout: {
+            let actualText = currentText()
+            return matches(actualText) ? nil : "'\(actualText)'"
+        } onTimeout: { reason in
             let expected = step.equals?.stringValue.map { "equals '\($0)'" } ?? "contains '\(step.contains ?? "")'"
-            return AssertionError.assertionFailed(assertion: "text", expected: expected, actual: "'\(actualText)' for '\(id)'")
+            return AssertionError.assertionFailed(assertion: "text", expected: expected, actual: "\(reason) for '\(id)'")
         }
     }
 
@@ -334,12 +344,11 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         guard let expectedCount = step.equals?.intValue else {
             throw AssertionError.missingParameter(assertion: "count", parameter: "equals")
         }
-        var actualCount = 0
         try pollUntil(timeout: timeout) {
-            actualCount = app.descendants(matching: .any).matching(identifier: id).count
-            return actualCount == expectedCount
-        } onTimeout: {
-            AssertionError.assertionFailed(assertion: "count", expected: "\(expectedCount)", actual: "\(actualCount) for '\(id)'")
+            let actualCount = app.descendants(matching: .any).matching(identifier: id).count
+            return actualCount == expectedCount ? nil : "\(actualCount)"
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "count", expected: "\(expectedCount)", actual: "\(reason) for '\(id)'")
         }
     }
 
@@ -354,19 +363,14 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.stateNotAccessible(path: path)
         }
 
-        var actualDescription = "nil"
         try pollUntil(timeout: timeout) {
-            guard let actual = provider.getValue(at: path) else {
-                actualDescription = "nil"
-                return false
-            }
-            actualDescription = String(describing: actual)
-            return self.valuesMatch(expected: expectedValue, actual: actual)
-        } onTimeout: {
+            guard let actual = provider.getValue(at: path) else { return "nil" }
+            return self.valuesMatch(expected: expectedValue, actual: actual) ? nil : String(describing: actual)
+        } onTimeout: { reason in
             AssertionError.assertionFailed(
                 assertion: "state",
                 expected: String(describing: expectedValue.value),
-                actual: "\(actualDescription) at '\(path)'"
+                actual: "\(reason) at '\(path)'"
             )
         }
     }
@@ -428,15 +432,29 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
 
     // MARK: - Helper Methods
 
-    /// Poll `check` every `pollInterval` until it returns true or the timeout elapses.
+    /// Poll `check` every `pollInterval` until it returns nil (pass) or the
+    /// timeout elapses. While the condition is unmet `check` returns the
+    /// reason, the text that goes into Actual. At timeout `onTimeout` builds
+    /// the failure from the last reason; when the reason changed while
+    /// waiting, the failure carries every reason with its span.
     private func pollUntil(
         timeout: TimeInterval,
-        check: () -> Bool,
-        onTimeout: () -> AssertionError
+        check: () -> String?,
+        onTimeout: (String) -> AssertionError
     ) throws {
-        let deadline = Date().addingTimeInterval(timeout)
+        let start = Date()
+        let deadline = start.addingTimeInterval(timeout)
+        var history = ReasonHistory()
+        var last = ""
+        func look() -> Bool {
+            let lookedAt = Date().timeIntervalSince(start)
+            guard let reason = check() else { return true }
+            last = reason
+            history.observe(reason, at: lookedAt)
+            return false
+        }
         repeat {
-            if check() {
+            if look() {
                 return
             }
             if Date() >= deadline {
@@ -445,10 +463,12 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             Thread.sleep(forTimeInterval: pollInterval)
         } while Date() < deadline
         // Final check to avoid off-by-one at the boundary
-        if check() {
+        if look() {
             return
         }
-        throw onTimeout()
+        let failure = onTimeout(last)
+        guard let block = history.block(end: Date().timeIntervalSince(start)) else { throw failure }
+        throw AssertionError.timedOut(failure, history: block)
     }
 
     /// Instant visibility check (no waiting) used by conditions

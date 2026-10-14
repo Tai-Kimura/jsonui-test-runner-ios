@@ -39,7 +39,12 @@ enum ViewportVisibility {
     }
 
     static func isVisible(id: String, in app: XCUIApplication) -> Bool {
-        guard let found = locate(id: id, in: app) else { return false }
-        return VisibleFrame.inViewport(found.frame, clips: found.clips)
+        notVisibleReason(id: id, in: app) == nil
+    }
+
+    /// nil when visible; otherwise why not, in the words the web driver uses.
+    static func notVisibleReason(id: String, in app: XCUIApplication) -> String? {
+        guard let found = locate(id: id, in: app) else { return "does not exist" }
+        return VisibleFrame.inViewport(found.frame, clips: found.clips) ? nil : "not in the viewport"
     }
 }
