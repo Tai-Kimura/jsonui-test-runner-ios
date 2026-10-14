@@ -236,13 +236,13 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         guard let id = step.id else {
             throw AssertionError.missingParameter(assertion: "visible", parameter: "id")
         }
-        // SwiftUI accessibility *containers* report isHittable == false because
-        // hit-testing resolves to a child, so the frame decides: one with an
-        // area (VisibleFrame — at least 1pt each way; an empty container's
-        // 0.5pt anchor is not).
+        // In the viewport: some of the element (at least 1pt each way) inside
+        // the app's frame and every scroll container above it
+        // (VisibleFrame.inViewport, ViewportVisibility). Not isHittable:
+        // SwiftUI accessibility *containers* report it false because
+        // hit-testing resolves to a child.
         try pollUntil(timeout: timeout) {
-            let element = self.findElementQuery(id: id, in: app)
-            return element.exists && VisibleFrame.hasArea(element.frame)
+            ViewportVisibility.isVisible(id: id, in: app)
         } onTimeout: {
             AssertionError.assertionFailed(assertion: "visible", expected: "visible", actual: "not visible for '\(id)'")
         }
@@ -252,9 +252,14 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         guard let id = step.id else {
             throw AssertionError.missingParameter(assertion: "notVisible", parameter: "id")
         }
+        // Not visible: absent, nothing of it in the viewport, or not hittable
+        // (covered — a sheet over it). The viewport part is new: the frame
+        // alone was read, so an element scrolled out of view passed both
+        // `visible` and `notVisible`. Whether a covered element should count
+        // as visible, as Android's isVisibleToUser may, is a separate ruling.
         try pollUntil(timeout: timeout) {
-            let element = self.findElementQuery(id: id, in: app)
-            return !(element.exists && element.isHittable && VisibleFrame.hasArea(element.frame))
+            guard ViewportVisibility.isVisible(id: id, in: app) else { return true }
+            return !self.findElementQuery(id: id, in: app).isHittable
         } onTimeout: {
             AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "still visible for '\(id)'")
         }
@@ -446,9 +451,9 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     }
 
     /// Instant visibility check (no waiting) used by conditions
+    /// `when: { visible / notVisible }` — the same predicate as the asserts.
     private func isInstantlyVisible(id: String, in app: XCUIApplication) -> Bool {
-        let element = findElementQuery(id: id, in: app)
-        return element.exists && VisibleFrame.hasArea(element.frame)
+        ViewportVisibility.isVisible(id: id, in: app)
     }
 
     private func valuesMatch(expected: AnyCodable, actual: Any) -> Bool {

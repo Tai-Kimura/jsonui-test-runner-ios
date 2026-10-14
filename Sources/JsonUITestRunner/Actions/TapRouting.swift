@@ -91,4 +91,24 @@ public enum VisibleFrame {
         if frame.isNull || frame.isInfinite { return false }
         return frame.width >= minimumSide && frame.height >= minimumSide
     }
+
+    /// The part of `frame` that the viewport shows: `frame` cut by every
+    /// rectangle that clips it — the app's frame and each scroll container
+    /// it sits in. `.null` when nothing of it is shown.
+    public static func shownPart(of frame: CGRect, clips: [CGRect]) -> CGRect {
+        if frame.isNull || frame.isInfinite { return .null }
+        return clips.reduce(frame) { part, clip in part.isNull ? part : part.intersection(clip) }
+    }
+
+    /// `visible` / `notVisible`: some of the element is in the viewport — at
+    /// least 1pt each way of it is inside the app's frame and inside every
+    /// scroll container it sits in. Not "its centre": Android (the baseline,
+    /// UiAutomator's isVisibleToUser) calls a Label visible when only 5dp of
+    /// it shows at the bottom of a ScrollView, its centre outside (measured
+    /// 2026-10-14, KotlinJsonUI 2.43.12). Until this, iOS read the frame
+    /// alone, so a Label scrolled out of a 200pt ScrollView was `visible` —
+    /// and, not being hittable, `notVisible` too.
+    public static func inViewport(_ frame: CGRect, clips: [CGRect]) -> Bool {
+        hasArea(shownPart(of: frame, clips: clips))
+    }
 }
