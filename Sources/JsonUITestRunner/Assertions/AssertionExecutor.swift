@@ -252,14 +252,15 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         guard let id = step.id else {
             throw AssertionError.missingParameter(assertion: "notVisible", parameter: "id")
         }
-        // Not visible: absent, nothing of it in the viewport, or not hittable
-        // (covered — a sheet over it). The viewport part is new: the frame
-        // alone was read, so an element scrolled out of view passed both
-        // `visible` and `notVisible`. Whether a covered element should count
-        // as visible, as Android's isVisibleToUser may, is a separate ruling.
+        // The negation of `visible`, as on Android (findObject(By.res) is
+        // null). Not isHittable: an element under an opaque view in the same
+        // window, or at opacity 0, is not hittable but Android calls it
+        // visible — and so did `visible` here, so both asserts passed on it.
+        // An element under a sheet, fullScreenCover, alert or
+        // confirmationDialog is not visible by the predicate itself
+        // (ViewportVisibility), not by hit-testing.
         try pollUntil(timeout: timeout) {
-            guard ViewportVisibility.isVisible(id: id, in: app) else { return true }
-            return !self.findElementQuery(id: id, in: app).isHittable
+            !ViewportVisibility.isVisible(id: id, in: app)
         } onTimeout: {
             AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "still visible for '\(id)'")
         }

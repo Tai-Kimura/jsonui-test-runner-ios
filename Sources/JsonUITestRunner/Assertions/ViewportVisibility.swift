@@ -7,6 +7,13 @@ import XCTest
 ///
 /// The element is the identifier's first match in tree order, the one
 /// `descendants(matching: .any).matching(identifier:).firstMatch` returns.
+///
+/// While a modal is up (sheet, at any detent; fullScreenCover; alert;
+/// confirmationDialog) the snapshot holds the modal's elements only — those
+/// of the view under it are not in it, although a query still finds them
+/// (`exists` is true). So they are not visible here, which is Android's answer:
+/// UiAutomator does not find what is under a ModalBottomSheet or a Dialog
+/// (measured 2026-10-14, iOS 26.2 / Android API 35).
 enum ViewportVisibility {
     /// The element types whose frame is the window onto content that scrolls.
     static let clippingTypes: Set<XCUIElement.ElementType> = [.scrollView, .table, .collectionView, .webView]
