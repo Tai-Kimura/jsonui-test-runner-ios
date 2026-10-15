@@ -42,6 +42,10 @@ public struct ScreenTest: Codable {
     public let launch: LaunchConfig?
     /// API mock scenario set applied (and the app relaunched) before the cases run
     public let mocks: [String: String]?
+    /// `shared` (absent = shared): setup once, cases share one app state,
+    /// teardown once. `reopen`: each case starts from a relaunched app, with
+    /// setup before and teardown after it. See `CaseIsolation`.
+    public let caseIsolation: CaseIsolation?
     public let setup: [TestStep]?
     public let teardown: [TestStep]?
     public let cases: [TestCase]

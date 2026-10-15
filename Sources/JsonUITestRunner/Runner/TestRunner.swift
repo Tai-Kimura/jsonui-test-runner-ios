@@ -284,7 +284,6 @@ public class JsonUITestRunner {
     /// Run a screen test
     public func run(screenTest: ScreenTest) -> TestRunResult {
         let startTime = Date()
-        var caseResults: [TestCaseResult] = []
 
         // Test-level platform gate: emit one skipped row PER CASE (never an
         // empty caseResults) so a file-level skip stays visible in the report
@@ -351,6 +350,33 @@ public class JsonUITestRunner {
             OrientationRuntime.apply(runDeclaredOrientation)
         }
 
+        let caseResults: [TestCaseResult]
+        if (screenTest.caseIsolation ?? .shared) == .reopen {
+            caseResults = runCasesReopened(screenTest, runDeclaredOrientation: runDeclaredOrientation)
+        } else {
+            caseResults = runCasesShared(screenTest, runDeclaredOrientation: runDeclaredOrientation)
+        }
+
+        // Reset mock scenarios so state does not leak into the next test file.
+        if screenTest.mocks != nil {
+            try? mockClient?.reset()
+        }
+
+        let totalDuration = Date().timeIntervalSince(startTime)
+        let result = TestRunResult(
+            testName: screenTest.metadata.name,
+            caseResults: caseResults,
+            totalDuration: totalDuration
+        )
+        writeResultsIfNeeded(result)
+        return result
+    }
+
+    /// `caseIsolation: shared` (the default): setup once, every case in the
+    /// one app state the previous case left (its scroll position, the screen
+    /// it navigated to), teardown once. The order of the cases matters.
+    private func runCasesShared(_ screenTest: ScreenTest, runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
+        var caseResults: [TestCaseResult] = []
         // Run setup once. If it throws, every case is recorded as failed but
         // teardown still runs (§7 teardown guarantee).
         var setupError: Error? = nil
@@ -364,26 +390,8 @@ public class JsonUITestRunner {
         }
 
         for testCase in screenTest.cases {
-            // Skip if marked to skip
-            if testCase.skip == true {
-                caseResults.append(TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true))
-                continue
-            }
-
-            // Check platform filter. Deterministic skip-reason rule: platform
-            // is evaluated BEFORE responsive, so when a case carries both
-            // gates and both are unmet, skipReason is "platform" (the static
-            // gate wins over the size-dependent one, keeping reports stable
-            // across device sizes).
-            if let platform = testCase.platform, !platform.includes(config.platform) {
-                caseResults.append(TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true, skipReason: .platform))
-                continue
-            }
-
-            // Case-level responsive gate, evaluated against the live
-            // device/window size (parallel to the platform gate).
-            if let responsive = testCase.responsive, !ResponsiveRuntime.matches(responsive, app: app) {
-                caseResults.append(TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true, skipReason: .responsive))
+            if let gated = gateRow(testCase) {
+                caseResults.append(gated)
                 continue
             }
 
@@ -425,19 +433,102 @@ public class JsonUITestRunner {
             }
         }
 
-        // Reset mock scenarios so state does not leak into the next test file.
-        if screenTest.mocks != nil {
-            try? mockClient?.reset()
+        return caseResults
+    }
+
+    /// `caseIsolation: reopen`: every case that runs starts from a freshly
+    /// launched app. Before each case the file's mock scenarios are
+    /// re-applied, the app is relaunched with the file's `launch` block
+    /// (`applyLaunch`) or a plain `app.launch()`, and the run orientation is
+    /// re-applied; then setup, the case, and teardown. A gated case launches
+    /// nothing. Each retry attempt relaunches too.
+    ///
+    /// Failure semantics per case, as the shared path has them per file: a
+    /// setup failure fails that case (the body never ran) and its teardown
+    /// still runs; a teardown failure is an extra `teardown` row; a failed
+    /// case stops the file unless `continueOnFailure`.
+    private func runCasesReopened(_ screenTest: ScreenTest, runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
+        ReopenedCases.run(
+            cases: screenTest.cases,
+            retries: config.caseRetries,
+            continueOnFailure: config.continueOnFailure,
+            hooks: ReopenedCases.Hooks(
+                gate: { self.gateRow($0) },
+                reopen: {
+                    self.currentCaseName = "setup"
+                    if let mocks = screenTest.mocks {
+                        try self.requireMockClient("mocks").scenarioSet(mocks)
+                    }
+                    if let launch = screenTest.launch {
+                        self.applyLaunch(launch)
+                    } else {
+                        self.app.launch()
+                    }
+                    if let runDeclaredOrientation {
+                        OrientationRuntime.apply(runDeclaredOrientation)
+                    }
+                },
+                setup: {
+                    guard let setupSteps = screenTest.setup else { return }
+                    var warnings: [String] = []
+                    try self.executeSteps(setupSteps, warnings: &warnings)
+                },
+                body: { testCase in
+                    self.runTestCase(testCase).stamping(
+                        declared: OrientationRuntime.declaredForCase(
+                            steps: testCase.steps, runDeclared: runDeclaredOrientation),
+                        observed: OrientationRuntime.observe(app: self.app)
+                    )
+                },
+                teardown: {
+                    guard let teardownSteps = screenTest.teardown else { return }
+                    self.currentCaseName = "teardown"
+                    var warnings: [String] = []
+                    try self.executeSteps(teardownSteps, warnings: &warnings)
+                },
+                setupFailed: { testCase, error in
+                    TestCaseResult(
+                        name: testCase.name,
+                        passed: false,
+                        duration: 0,
+                        error: error is MockClientError
+                            ? error
+                            : TestRunnerError.setupFailed(reason: error.localizedDescription)
+                    )
+                },
+                teardownFailed: { _, error in
+                    TestCaseResult(name: "teardown", passed: false, duration: 0, error: error)
+                },
+                isPass: { $0.passed },
+                stampAttempts: { $0.stamping(attempts: $1) }
+            )
+        )
+    }
+
+    /// The gates a case passes before anything runs — `skip`, case-level
+    /// platform, case-level responsive. Returns the skipped row, or nil when
+    /// the case should run.
+    private func gateRow(_ testCase: TestCase) -> TestCaseResult? {
+        // Skip if marked to skip
+        if testCase.skip == true {
+            return TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true)
         }
 
-        let totalDuration = Date().timeIntervalSince(startTime)
-        let result = TestRunResult(
-            testName: screenTest.metadata.name,
-            caseResults: caseResults,
-            totalDuration: totalDuration
-        )
-        writeResultsIfNeeded(result)
-        return result
+        // Check platform filter. Deterministic skip-reason rule: platform
+        // is evaluated BEFORE responsive, so when a case carries both
+        // gates and both are unmet, skipReason is "platform" (the static
+        // gate wins over the size-dependent one, keeping reports stable
+        // across device sizes).
+        if let platform = testCase.platform, !platform.includes(config.platform) {
+            return TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true, skipReason: .platform)
+        }
+
+        // Case-level responsive gate, evaluated against the live
+        // device/window size (parallel to the platform gate).
+        if let responsive = testCase.responsive, !ResponsiveRuntime.matches(responsive, app: app) {
+            return TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true, skipReason: .responsive)
+        }
+        return nil
     }
 
     /// Run a case, re-running it up to `config.caseRetries` extra times
