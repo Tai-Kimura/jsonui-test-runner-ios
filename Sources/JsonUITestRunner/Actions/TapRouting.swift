@@ -15,6 +15,12 @@ public enum TapRoute: Equatable {
     case offscreen
     /// Not hittable and no frame at all: nothing to aim at.
     case noFrame
+    /// Not hittable, and the frame's center lies inside the on-screen
+    /// software keyboard: a coordinate tap there types a key (measured
+    /// 2026-10-15, iPhone 17 / iOS 27.0: a sign-in button under a keyboard
+    /// that came back after typeText, the tap typed one more character into
+    /// the password field and the button was never pressed).
+    case underKeyboard
 }
 
 /// Whether a scroll target is where the next step can act on it.
@@ -63,12 +69,24 @@ public enum ScrollVisibility {
 /// thumbnail at {{0, 312}, {132.9, 133}} on a 402pt-wide simulator that
 /// XCTest reports as not hittable (2026-09-03, iOS 26.4), an iPad dismiss
 /// key with a pre-animation frame ~350pt below the screen (2026-07-21).
+///
+/// `keyboard` is the on-screen keyboard's frame, nil when none is up. Only
+/// the coordinate route consults it: a hittable element is in front of the
+/// keyboard by definition, and the off-screen route taps the element, not a
+/// point. The keyboard's own keys never pass one — the dismiss-key path asks
+/// without it, because aiming inside the keyboard is that path's job.
 public enum TapRouting {
-    public static func route(isHittable: Bool, frame: CGRect, appFrame: CGRect) -> TapRoute {
+    public static func route(
+        isHittable: Bool, frame: CGRect, appFrame: CGRect, keyboard: CGRect? = nil
+    ) -> TapRoute {
         if isHittable { return .element }
         if frame.isNull || frame.isInfinite || frame.isEmpty { return .noFrame }
         let center = CGPoint(x: frame.midX, y: frame.midY)
-        return appFrame.contains(center) ? .frameCenter : .offscreen
+        guard appFrame.contains(center) else { return .offscreen }
+        if let keyboard, !keyboard.isNull, !keyboard.isEmpty, keyboard.contains(center) {
+            return .underKeyboard
+        }
+        return .frameCenter
     }
 }
 

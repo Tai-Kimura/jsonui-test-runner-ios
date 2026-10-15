@@ -52,4 +52,55 @@ final class TapRoutingTests: XCTestCase {
         let edge = CGRect(x: 360, y: 100, width: 60, height: 44)
         XCTAssertEqual(TapRouting.route(isHittable: false, frame: edge, appFrame: phone), .frameCenter)
     }
+
+    // MARK: the keyboard (2026-10-15)
+
+    /// The incident's shape: a sign-in button at {{24, 567}, {354, 56}} on an
+    /// iPhone 17 window, not hittable because the keyboard came back over it
+    /// after typeText. Its center (201, 595) is inside the keyboard frame,
+    /// read in the same run: {{0, 590}, {402, 226}}.
+    private let button = CGRect(x: 24, y: 567, width: 354, height: 56)
+    private let keyboard = CGRect(x: 0, y: 590, width: 402, height: 226)
+
+    func testACenterInsideTheKeyboardIsNotACoordinateToTap() {
+        XCTAssertEqual(
+            TapRouting.route(isHittable: false, frame: button, appFrame: phone, keyboard: keyboard),
+            .underKeyboard
+        )
+    }
+
+    func testTheSameFrameWithNoKeyboardStillGoesToItsCenter() {
+        // Control: the route the incident took, and still takes when no
+        // keyboard is up — the remote-UI shapes this branch exists for.
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: button, appFrame: phone, keyboard: nil), .frameCenter)
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: button, appFrame: phone), .frameCenter)
+    }
+
+    func testAFrameThatOnlyOverlapsTheKeyboardIsTappedAtItsCenter() {
+        // Boundary: the keyboard's top edge. The tap lands on the center, so
+        // the center decides — a frame reaching into the keyboard with its
+        // center above it is still a coordinate a finger can use.
+        let top = keyboard.minY
+        let above = CGRect(x: 24, y: top - 40, width: 354, height: 56)   // center top-12
+        let below = CGRect(x: 24, y: top - 16, width: 354, height: 56)   // center top+12
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: above, appFrame: phone, keyboard: keyboard), .frameCenter)
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: below, appFrame: phone, keyboard: keyboard), .underKeyboard)
+    }
+
+    func testAHittableElementIsTappedEvenWithAKeyboardUp() {
+        // Hittable means nothing is in front of it, the keyboard included.
+        XCTAssertEqual(TapRouting.route(isHittable: true, frame: button, appFrame: phone, keyboard: keyboard), .element)
+    }
+
+    func testAnEmptyKeyboardFrameCoversNothing() {
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: button, appFrame: phone, keyboard: .zero), .frameCenter)
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: button, appFrame: phone, keyboard: .null), .frameCenter)
+    }
+
+    func testOffscreenIsDecidedBeforeTheKeyboard() {
+        // A frame below the window keeps its element tap (XCTest scrolls it
+        // into view), keyboard or not.
+        let below = CGRect(x: 0, y: 1155.67, width: 402, height: 78)
+        XCTAssertEqual(TapRouting.route(isHittable: false, frame: below, appFrame: phone, keyboard: keyboard), .offscreen)
+    }
 }

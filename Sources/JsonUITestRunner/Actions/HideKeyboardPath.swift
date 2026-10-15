@@ -1,6 +1,6 @@
 import Foundation
 
-/// Which of `hideKeyboard`'s four exits produced the OK the step reported.
+/// Which of `hideKeyboard`'s exits produced the OK the step reported.
 ///
 /// The action returns the same success from four places: the keyboard was
 /// not on screen at all, a dismiss key worked, an accessory Done worked, or
@@ -29,6 +29,11 @@ public enum HideKeyboardPath: Equatable {
     /// underneath. The counts are the context reading taken AFTER the drag,
     /// so a reader can see what survived rather than trust that it did.
     case drag(sheets: Int, fields: Int)
+    /// The Return key of the focused single-line field (see
+    /// `ReturnKeyDismiss`). It also runs the field's submit handler when the
+    /// screen binds one, which nothing in the tree can show — so the note
+    /// says so instead of staying quiet about it.
+    case returnKey(field: String)
 
     /// The line for `note(...)`, which prefixes `jsonui-test-runner: `.
     ///
@@ -48,6 +53,8 @@ public enum HideKeyboardPath: Equatable {
             return "hideKeyboard: dismissed via accessory Done"
         case .drag(let sheets, let fields):
             return "hideKeyboard: dismissed via drag (context intact: sheets=\(sheets), fields=\(fields))"
+        case .returnKey(let field):
+            return "hideKeyboard: dismissed via Return on '\(field)' — Return also fires the field's onSubmit if the screen binds one"
         }
     }
 }

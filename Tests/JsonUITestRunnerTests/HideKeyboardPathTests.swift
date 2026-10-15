@@ -1,7 +1,7 @@
 import XCTest
 @testable import JsonUITestRunner
 
-/// The line each of `hideKeyboard`'s four exits prints.
+/// The line each of `hideKeyboard`'s exits prints.
 ///
 /// These exist because a consumer run of 3/3 passing could not say whether
 /// the risky drag had run at all (2026-09-04, driver 1.9.13). The texts are
@@ -43,6 +43,15 @@ final class HideKeyboardPathTests: XCTestCase {
         )
     }
 
+    func testTheReturnExitNamesTheFieldAndWhatReturnAlsoDoes() {
+        // Return also ends editing, and a bound onSubmit runs with it; the
+        // tree cannot show whether one is bound, so the line says it may.
+        XCTAssertEqual(
+            HideKeyboardPath.returnKey(field: "password_field").note,
+            "hideKeyboard: dismissed via Return on 'password_field' — Return also fires the field's onSubmit if the screen binds one"
+        )
+    }
+
     // MARK: the controls
 
     func testEveryPathIsDistinguishableFromEveryOther() {
@@ -52,7 +61,8 @@ final class HideKeyboardPathTests: XCTestCase {
             HideKeyboardPath.notVisible.note,
             HideKeyboardPath.dismissKey.note,
             HideKeyboardPath.accessoryDone.note,
-            HideKeyboardPath.drag(sheets: 0, fields: 0).note
+            HideKeyboardPath.drag(sheets: 0, fields: 0).note,
+            HideKeyboardPath.returnKey(field: "f").note
         ]
         XCTAssertEqual(Set(notes).count, notes.count, "two exits print the same line")
     }
@@ -62,7 +72,8 @@ final class HideKeyboardPathTests: XCTestCase {
             HideKeyboardPath.notVisible.note,
             HideKeyboardPath.dismissKey.note,
             HideKeyboardPath.accessoryDone.note,
-            HideKeyboardPath.drag(sheets: 3, fields: 4).note
+            HideKeyboardPath.drag(sheets: 3, fields: 4).note,
+            HideKeyboardPath.returnKey(field: "f").note
         ] {
             XCTAssertTrue(
                 note.hasPrefix("hideKeyboard: "),

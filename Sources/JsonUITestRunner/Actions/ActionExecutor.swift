@@ -55,6 +55,10 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// bundle). Defaults to the bundle this driver is compiled into, which is
     /// the consuming UITest bundle for both vendored-source and SPM setups.
     public var mediaBundle: Bundle?
+    /// When the last `input` / `typeText` / `clear` ended. The keyboard can
+    /// go away and come back after typing; `settleKeyboardAfterTyping` waits
+    /// that out, and only after typing.
+    private var lastTypedAt: Date?
 
     public init(platform: String = "ios", variables: VariableStore = VariableStore()) {
         self.platform = platform
@@ -214,10 +218,49 @@ public class XCUITestActionExecutor: ActionExecutor {
     private func tapResolvingHittability(
         _ element: XCUIElement, id: String, action: String, in app: XCUIApplication
     ) throws -> TapRoute {
-        let hittable = element.isHittable
-        let frame = element.frame
-        let route = TapRouting.route(isHittable: hittable, frame: frame, appFrame: app.frame)
+        // A keyboard that is still settling after typing can come back over
+        // the target between this read and the tap; read it once it is still.
+        settleKeyboardAfterTyping(in: app)
+        var hittable = element.isHittable
+        var frame = element.frame
+        var route = TapRouting.route(isHittable: hittable, frame: frame, appFrame: app.frame,
+                                     keyboard: visibleKeyboardFrame(in: app))
+        if route == .underKeyboard, isKeyboardKey(id: id, in: app) {
+            // The target is itself a key: aiming inside the keyboard is right.
+            route = .frameCenter
+        }
+        if route == .underKeyboard {
+            // A coordinate tap here types a key into the focused field and
+            // presses nothing (measured 2026-10-15: one more character in a
+            // password field, the sign-in button never pressed). Put the
+            // keyboard away and decide again — without Return, which would
+            // run the field's submit right before a tap that is usually the
+            // same submit.
+            let keyboardFrame = visibleKeyboardFrame(in: app).map { "\($0)" } ?? "(gone)"
+            note("\(action) '\(id)': exists but isHittable == false and its frame center is inside the on-screen keyboard "
+                + "(frame \(frame), keyboard \(keyboardFrame)) — putting the keyboard away first "
+                + "(dismiss key / accessory Done / drag; never Return)")
+            switch try dismissKeyboard(in: app, action: action, allowReturn: false) {
+            case .dismissed(let path):
+                note("\(action) '\(id)': " + path.note)
+            case .notDismissed:
+                throw ActionError.actionFailed(
+                    action: action,
+                    reason: "keyboard covers '\(id)' — hideKeyboard (which may press Return) or scroll it clear first"
+                )
+            }
+            hittable = element.isHittable
+            frame = element.frame
+            route = TapRouting.route(isHittable: hittable, frame: frame, appFrame: app.frame,
+                                     keyboard: visibleKeyboardFrame(in: app))
+        }
         switch route {
+        case .underKeyboard:
+            // The keyboard was put away and is back over the target.
+            throw ActionError.actionFailed(
+                action: action,
+                reason: "keyboard covers '\(id)' — hideKeyboard (which may press Return) or scroll it clear first"
+            )
         case .element:
             element.tap()
         case .frameCenter:
@@ -272,6 +315,12 @@ public class XCUITestActionExecutor: ActionExecutor {
         return route
     }
 
+    /// Whether `id` names something inside the keyboard (a key a test taps
+    /// on purpose), where a coordinate inside the keyboard is the target.
+    private func isKeyboardKey(id: String, in app: XCUIApplication) -> Bool {
+        app.keyboards.descendants(matching: .any).matching(identifier: id).firstMatch.exists
+    }
+
     /// Driver-side notice: the route a step took when it was not the obvious one.
     private func note(_ message: String) {
         FileHandle.standardError.write(("jsonui-test-runner: " + message + "\n").data(using: .utf8)!)
@@ -308,6 +357,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "input", parameter: "value")
         }
 
+        defer { lastTypedAt = Date() }
         let element = try findTypableElement(id: id, in: app)
         element.tap()
         try focusForTyping(element, action: "input", id: id, in: app, retap: { element.tap() })
@@ -391,6 +441,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         guard let value = step.value else {
             throw ActionError.missingParameter(action: "typeText", parameter: "value")
         }
+        defer { lastTypedAt = Date() }
         app.typeText(value)
     }
 
@@ -399,6 +450,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "clear", parameter: "id")
         }
 
+        defer { lastTypedAt = Date() }
         let element = try findTypableElement(id: id, in: app)
         element.tap()
         try focusForTyping(element, action: "clear", id: id, in: app, retap: { element.tap() })
@@ -762,6 +814,37 @@ public class XCUITestActionExecutor: ActionExecutor {
         return app.frame.intersects(frame)
     }
 
+    /// Wait out the keyboard leaving and coming back after typing (see
+    /// `KeyboardSettle`) before a step decides anything from it. Only after
+    /// `input` / `typeText` / `clear`; anything else reads at once. A wait
+    /// that ran is announced with what it settled on, and a keyboard still
+    /// moving at the budget says so — the step then reads what is there.
+    private func settleKeyboardAfterTyping(in app: XCUIApplication) {
+        let outcome = KeyboardSettle().run(
+            typedAt: lastTypedAt,
+            read: {
+                let keyboard = app.keyboards.firstMatch
+                let visible = keyboardIsVisible(in: app)
+                return KeyboardSettle.Reading(visible: visible, frame: visible ? keyboard.frame : .zero)
+            },
+            sleep: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
+            now: { Date() })
+        switch outcome {
+        case .notAfterTyping:
+            break
+        case .settled(let visible, let waited):
+            if waited >= 0.05 {
+                note(String(format: "keyboard settled after typing (%.1fs): %@", waited,
+                            visible ? "up" : "not visible"))
+            }
+        case .budgetSpent(let visible):
+            note("keyboard still moving after typing at the \(KeyboardSettle().budget)s budget; reading it as "
+                + (visible ? "up" : "not visible"))
+        }
+        // One wait per typing: the next step reads at once.
+        lastTypedAt = nil
+    }
+
     /// Polls until the keyboard leaves the screen (or the timeout lapses).
     /// Dismissal is judged by visibility, not existence — a phantom keyboard
     /// element may outlive the on-screen keyboard indefinitely.
@@ -775,6 +858,12 @@ public class XCUITestActionExecutor: ActionExecutor {
     }
 
     private func executeHideKeyboard(in app: XCUIApplication) throws {
+        // Read the keyboard only once it has stopped moving after typing —
+        // see `settleKeyboardAfterTyping`. Read at once, this step saw the
+        // gap in a keyboard that went away and came back, reported "nothing
+        // to do", and the keyboard returned over the next step's target.
+        settleKeyboardAfterTyping(in: app)
+
         // No-op when no keyboard is on screen — the action is a precondition
         // normalizer, not an assertion. (Existence alone is not enough; see
         // keyboardIsVisible.)
@@ -783,6 +872,32 @@ public class XCUITestActionExecutor: ActionExecutor {
             return
         }
 
+        switch try dismissKeyboard(in: app, action: "hideKeyboard", allowReturn: true) {
+        case .dismissed(let path):
+            note(path.note)
+        case .notDismissed(let returnRefusal):
+            throw ActionError.actionFailed(
+                action: "hideKeyboard",
+                reason: "Keyboard still visible after dismiss key / accessory Done / interactive scroll-dismiss / Return attempts"
+                    + (returnRefusal.map { " (Return: \($0))" } ?? "")
+            )
+        }
+    }
+
+    /// How the ladder ended when it did not throw.
+    private enum KeyboardLadderOutcome {
+        case dismissed(HideKeyboardPath)
+        /// Every rung was tried; the Return rung's refusal, when it refused.
+        case notDismissed(returnRefusal: String?)
+    }
+
+    /// The rungs that put the keyboard away, in the order `hideKeyboard` has
+    /// always tried them, with Return as the last one and only for the
+    /// caller that may press it (see `ReturnKeyDismiss`: `tap` may not).
+    /// Throws only when the drag took a presented context with it.
+    private func dismissKeyboard(
+        in app: XCUIApplication, action: String, allowReturn: Bool
+    ) throws -> KeyboardLadderOutcome {
         // 1. An explicit dismiss key when the keyboard has one (iPad).
         //
         //    iPad keyboard keys are UIAccessibilityElementKBKey elements;
@@ -818,7 +933,9 @@ public class XCUITestActionExecutor: ActionExecutor {
             switch TapRouting.route(isHittable: key.isHittable, frame: key.frame, appFrame: appFrame) {
             case .element:
                 key.tap()
-            case .frameCenter:
+            case .frameCenter, .underKeyboard:
+                // `.underKeyboard` cannot come back here — no keyboard frame
+                // is passed, because aiming inside it is this rung's job.
                 key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             case .offscreen, .noFrame:
                 // The key's reported frame can be OFF-SCREEN garbage — the
@@ -832,8 +949,7 @@ public class XCUITestActionExecutor: ActionExecutor {
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.96)).tap()
             }
             if waitForKeyboardDismiss(in: app, timeout: 0.5) {
-                note(HideKeyboardPath.dismissKey.note)
-                return
+                return .dismissed(.dismissKey)
             }
         }
 
@@ -843,8 +959,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             if button.exists, button.isHittable {
                 button.tap()
                 if waitForKeyboardDismiss(in: app, timeout: 0.5) {
-                    note(HideKeyboardPath.accessoryDone.note)
-                    return
+                    return .dismissed(.accessoryDone)
                 }
             }
         }
@@ -874,14 +989,13 @@ public class XCUITestActionExecutor: ActionExecutor {
             after: after
         ) {
         case .dismissed:
-            note(HideKeyboardPath.drag(
+            return .dismissed(.drag(
                 sheets: after.sheetCount,
                 fields: after.editableIdentifiers.count
-            ).note)
-            return
+            ))
         case .contextLost(let what):
             throw ActionError.actionFailed(
-                action: "hideKeyboard",
+                action: action,
                 reason: what
                     + ". The interactive scroll-dismiss drag acts on screen coordinates, and inside a "
                     + "presented sheet it is the sheet-dismiss gesture. Dismiss the keyboard with a "
@@ -889,11 +1003,88 @@ public class XCUITestActionExecutor: ActionExecutor {
                     + "that needs it."
             )
         case .notDismissed:
-            throw ActionError.actionFailed(
-                action: "hideKeyboard",
-                reason: "Keyboard still visible after dismiss key / accessory Done / interactive scroll-dismiss attempts"
-            )
+            break
         }
+
+        // 4. Return, for the caller that may press it.
+        guard allowReturn else { return .notDismissed(returnRefusal: nil) }
+        return try dismissWithReturn(in: app, keyboard: keyboard)
+    }
+
+    /// The Return rung. The key is pressed only when `ReturnKeyDismiss`
+    /// says so, and the focused field's value is read on both sides: a
+    /// Return that changed it is a failure, whatever happened to the
+    /// keyboard.
+    private func dismissWithReturn(
+        in app: XCUIApplication, keyboard: XCUIElement
+    ) throws -> KeyboardLadderOutcome {
+        let focused = focusedField(in: app)
+        let labels = returnKeyLabelsPresent(on: keyboard)
+        switch ReturnKeyDismiss.verdict(field: focused.kind, fieldId: focused.element?.identifier, keyLabels: labels) {
+        case .refuse(let why):
+            return .notDismissed(returnRefusal: why)
+        case .press(let label):
+            let field = focused.element
+            let fieldName = field.map { $0.identifier.isEmpty ? "(no identifier)" : $0.identifier } ?? "(no identifier)"
+            let before = field?.value as? String
+            let key = keyboard.descendants(matching: .any)
+                .matching(NSPredicate(format: "label ==[c] %@", label)).firstMatch
+            switch TapRouting.route(isHittable: key.isHittable, frame: key.frame, appFrame: app.frame) {
+            case .element:
+                key.tap()
+            case .frameCenter, .underKeyboard, .offscreen, .noFrame:
+                // Keys report isHittable == false on some keyboards (see the
+                // dismiss-key rung); a key with no usable frame is typed as
+                // the return character instead, which is the same key.
+                if key.frame.isEmpty || !app.frame.contains(CGPoint(x: key.frame.midX, y: key.frame.midY)) {
+                    app.typeText(XCUIKeyboardKey.return.rawValue)
+                } else {
+                    key.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                }
+            }
+            let gone = waitForKeyboardDismiss(in: app, timeout: 1.0)
+            // The field can be gone after Return (a submit that navigated);
+            // then there is no value to compare, which is not a change.
+            if let field, field.exists, let after = field.value as? String, let before, after != before {
+                throw ActionError.actionFailed(
+                    action: "hideKeyboard",
+                    reason: "pressing Return ('\(label)') to put the keyboard away changed the value of "
+                        + "'\(fieldName)' from '\(before)' to '\(after)'"
+                )
+            }
+            return gone
+                ? .dismissed(.returnKey(field: fieldName))
+                : .notDismissed(returnRefusal: "Return ('\(label)') was pressed and the keyboard stayed")
+        }
+    }
+
+    /// The field holding keyboard focus and how Return behaves in it.
+    /// `hasKeyboardFocus` is asked only where XCTest has it (see
+    /// `keyboardFocus(of:id:in:)`).
+    private func focusedField(in app: XCUIApplication) -> (kind: ReturnKeyDismiss.FieldKind, element: XCUIElement?) {
+        guard app.responds(to: NSSelectorFromString("hasKeyboardFocus")) else { return (.unknown, nil) }
+        let focus = NSPredicate(format: "hasKeyboardFocus == true")
+        let multi = app.textViews.matching(focus).firstMatch
+        if multi.exists { return (.multiLine, multi) }
+        for query in [app.secureTextFields, app.textFields] {
+            let single = query.matching(focus).firstMatch
+            if single.exists { return (.singleLine, single) }
+        }
+        return (.unknown, nil)
+    }
+
+    /// The Return-key labels `ReturnKeyDismiss` knows that this keyboard
+    /// shows. The quiet ones are asked first; the action ones only when no
+    /// quiet one is there, to name what was refused.
+    private func returnKeyLabelsPresent(on keyboard: XCUIElement) -> [String] {
+        func present(_ labels: [String]) -> [String] {
+            labels.filter {
+                keyboard.descendants(matching: .any)
+                    .matching(NSPredicate(format: "label ==[c] %@", $0)).firstMatch.exists
+            }
+        }
+        let quiet = present(ReturnKeyDismiss.quietLabels)
+        return quiet.isEmpty ? present(ReturnKeyDismiss.actionLabels) : quiet
     }
 
     /// The two cheap readings `hideKeyboard` compares across its untargeted
