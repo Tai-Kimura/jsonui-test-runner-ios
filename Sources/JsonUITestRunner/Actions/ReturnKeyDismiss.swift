@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Whether `hideKeyboard` may press the Return key to put the keyboard away.
@@ -73,5 +74,25 @@ public enum ReturnKeyDismiss {
                 + "press it as a step if that is what the test means")
         }
         return .refuse("no Return key was found on the keyboard")
+    }
+
+    /// Which of the keyboard elements carrying the Return label is the Return
+    /// key: the bottom-most one (largest maxY), the first of equals. nil for
+    /// none. With one element it is that element, as before.
+    ///
+    /// The label is not unique on every layout. The Japanese kana keyboard
+    /// also has a top-left key labelled 完了 that is not Return, and it comes
+    /// first in index order (measured iPhone 17 / iOS 27.0: a key at y 590,
+    /// the Return button at y 698). Taking the first match pressed that key,
+    /// and `hideKeyboard` reported "Return ('完了') was pressed and the
+    /// keyboard stayed" however often it tried. Return sits on the bottom row
+    /// of every layout.
+    public static func returnKeyIndex(frames: [CGRect]) -> Int? {
+        guard !frames.isEmpty else { return nil }
+        var best = 0
+        for (i, f) in frames.enumerated() where f.maxY > frames[best].maxY {
+            best = i
+        }
+        return best
     }
 }

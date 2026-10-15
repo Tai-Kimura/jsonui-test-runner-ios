@@ -1027,8 +1027,13 @@ public class XCUITestActionExecutor: ActionExecutor {
             let field = focused.element
             let fieldName = field.map { $0.identifier.isEmpty ? "(no identifier)" : $0.identifier } ?? "(no identifier)"
             let before = field?.value as? String
-            let key = keyboard.descendants(matching: .any)
-                .matching(NSPredicate(format: "label ==[c] %@", label)).firstMatch
+            // The bottom-most element carrying the label (ReturnKeyDismiss.returnKeyIndex):
+            // on the kana layout the first match is a top-left key, not Return.
+            let query = keyboard.descendants(matching: .any)
+                .matching(NSPredicate(format: "label ==[c] %@", label))
+            let matches = allElements(query)
+            let key = ReturnKeyDismiss.returnKeyIndex(frames: matches.map(\.frame)).map { matches[$0] }
+                ?? query.firstMatch
             switch TapRouting.route(isHittable: key.isHittable, frame: key.frame, appFrame: app.frame) {
             case .element:
                 key.tap()
