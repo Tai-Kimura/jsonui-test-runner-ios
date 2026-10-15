@@ -1137,6 +1137,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         let providers = [app, springboard]
 
         var sawAlert = false
+        var sawButtonNotHittable = false
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
             for provider in providers {
@@ -1145,8 +1146,8 @@ public class XCUITestActionExecutor: ActionExecutor {
                     sawAlert = true
                     let button = container.buttons[buttonText]
                     if button.exists {
-                        button.tap()
-                        return
+                        if try confirmDismissTap(button, label: buttonText, deadline: deadline) { return }
+                        sawButtonNotHittable = true
                     }
                 }
             }
@@ -1154,9 +1155,9 @@ public class XCUITestActionExecutor: ActionExecutor {
             // The Save Password sheet exposes its buttons directly under
             // SpringBoard on some iOS versions, outside alerts/sheets queries.
             let systemButton = springboard.buttons[buttonText]
-            if systemButton.exists, systemButton.isHittable {
-                systemButton.tap()
-                return
+            if systemButton.exists {
+                if try confirmDismissTap(systemButton, label: buttonText, deadline: deadline) { return }
+                sawButtonNotHittable = true
             }
 
             // Keyboard-area system overlays (the "Use Strong Password?" sheet)
@@ -1181,19 +1182,50 @@ public class XCUITestActionExecutor: ActionExecutor {
             if app.buttons["GenerateStrongPasswordButton"].exists {
                 sawAlert = true
                 let sheetClose = app.buttons["xmark"]
-                if sheetClose.exists, sheetClose.isHittable {
-                    sheetClose.tap()
-                    return
+                if sheetClose.exists {
+                    if try confirmDismissTap(sheetClose, label: "xmark", deadline: deadline) { return }
+                    sawButtonNotHittable = true
                 }
             }
 
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         } while Date() < deadline
 
+        if sawButtonNotHittable {
+            throw ActionError.actionFailed(action: "alertTap", reason: "Button '\(buttonText)' was found but never hittable within \(Int(timeout * 1000))ms")
+        }
         if sawAlert {
             throw ActionError.actionFailed(action: "alertTap", reason: "Button '\(buttonText)' not found in alert")
         }
         throw ActionError.actionFailed(action: "alertTap", reason: "No alert appeared within \(Int(timeout * 1000))ms")
+    }
+
+    /// Tap `button` once it is hittable and wait for it to go (see
+    /// `DismissTapConfirm`). true: it went. false: never hittable — the
+    /// caller keeps polling. Throws when it was tapped and stayed.
+    private func confirmDismissTap(_ button: XCUIElement, label: String, deadline: Date) throws -> Bool {
+        // A tap that lands is given its second to work even at the deadline.
+        let outcome = DismissTapConfirm().run(
+            deadline: max(deadline, Date().addingTimeInterval(1.0)),
+            exists: { button.exists },
+            hittable: { button.isHittable },
+            tap: { button.tap() },
+            sleep: { RunLoop.current.run(until: Date().addingTimeInterval($0)) },
+            now: { Date() })
+        switch outcome {
+        case .dismissed(let taps):
+            if taps > 1 {
+                note("alertTap '\(label)': the first \(taps - 1) tap(s) did not dismiss it (it was still appearing) — dismissed on tap \(taps)")
+            }
+            return true
+        case .neverHittable:
+            return false
+        case .stayed(let taps):
+            throw ActionError.actionFailed(
+                action: "alertTap",
+                reason: "Button '\(label)' was tapped \(taps) time(s) and is still there"
+            )
+        }
     }
 
     private func executeSelectOption(step: TestStep, in app: XCUIApplication) throws {
