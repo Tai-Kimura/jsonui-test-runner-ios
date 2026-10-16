@@ -183,3 +183,24 @@ final class StateBridgeVectorTests: XCTestCase {
         XCTAssertEqual(StateBridge.receipt(StateBridge.parse(#"{"truncated":40000}"#), launchId: "L1"), .truncated(bytes: 40000))
     }
 }
+
+final class EqualsNullTests: XCTestCase {
+    private func step(_ json: String) throws -> TestStep {
+        try JSONDecoder().decode(TestStep.self, from: Data(json.utf8))
+    }
+
+    func testANullEqualsIsAValueNotAMissingParameter() throws {
+        let decoded = try step(#"{"assert":"state","path":"nickname","equals":null}"#)
+        XCTAssertNotNil(decoded.equals, "equals: null read as missing")
+        XCTAssertTrue(decoded.equals?.value is NSNull)
+    }
+
+    func testAnAbsentEqualsIsStillNil() throws {
+        XCTAssertNil(try step(#"{"assert":"visible","id":"x"}"#).equals)
+    }
+
+    func testOtherValuesDecodeAsBefore() throws {
+        XCTAssertEqual(try step(#"{"assert":"state","path":"n","equals":3}"#).equals?.value as? Int, 3)
+        XCTAssertEqual(try step(#"{"assert":"state","path":"b","equals":false}"#).equals?.value as? Bool, false)
+    }
+}

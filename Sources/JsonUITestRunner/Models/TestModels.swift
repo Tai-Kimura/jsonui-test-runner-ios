@@ -462,6 +462,21 @@ public enum PlatformTarget: Codable {
 
 // MARK: - AnyCodable (for dynamic values)
 
+/// `"equals": null` is a value: a `state` assertion that the path holds null
+/// (spec §10.5, the `initialState__applied` conformance fixture). The
+/// synthesized decoders read an optional field with `decodeIfPresent`, which
+/// answers nil for a JSON null — the step then failed with "missing
+/// parameter 'equals'". This overload, picked for every `AnyCodable?` field
+/// (only the two `equals`), keeps a present null as `NSNull`; an absent key
+/// is still nil.
+extension KeyedDecodingContainer {
+    public func decodeIfPresent(_ type: AnyCodable.Type, forKey key: Key) throws -> AnyCodable? {
+        guard contains(key) else { return nil }
+        if try decodeNil(forKey: key) { return AnyCodable(NSNull()) }
+        return try decode(AnyCodable.self, forKey: key)
+    }
+}
+
 public struct AnyCodable: Codable {
     public let value: Any
 
