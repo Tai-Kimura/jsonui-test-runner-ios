@@ -699,24 +699,23 @@ public class JsonUITestRunner {
         let plan = InitialStatePlan.plan(flowTest: flowTest) { [testLoader] file in
             try? testLoader?.resolveFileReference(file)
         }
-        pendingReceipts = [:]
+        var pending: [String: String] = [:]
         if let entry = plan.launches.first {
             if let launchId = relaunch(flowTest.launch, screens: entry.screens) {
-                for screenId in (entry.screens ?? [:]).keys { pendingReceipts[screenId] = launchId }
+                for screenId in (entry.screens ?? [:]).keys { pending[screenId] = launchId }
             }
         }
-        trackedScreen = nil
-        assertionExecutor.setStateScreen(nil)
+        // A flow file starts from "unknown": nothing from the previous one.
+        flowScreens.startFlow(pendingReceipts: pending)
+        assertionExecutor.setStateScreen(flowScreens.stateScreen)
 
         var caseResults = runFlowSteps(flowTest)
 
         // Warnings the flow earns as a whole: referenced initialStates it did
         // not apply, and screens in viewModels it never reached.
         var flowWarnings = plan.warnings.map(InitialStatePlan.message)
-        for screenId in pendingReceipts.keys.sorted() {
-            flowWarnings.append("initialState for '\(screenId)' was sent but the flow never reached that screen, so it was not checked")
-        }
-        pendingReceipts = [:]
+        flowWarnings.append(contentsOf: flowScreens.unreachedWarnings)
+        flowScreens.startFlow(pendingReceipts: [:])
         if !flowWarnings.isEmpty, let first = caseResults.first {
             caseResults[0] = first.adding(warnings: flowWarnings)
         }
@@ -754,6 +753,9 @@ public class JsonUITestRunner {
         repeat {
             flowAttempts += 1
             flowError = nil
+            // Each attempt starts from "unknown" (FlowScreenTracker).
+            flowScreens.startAttempt()
+            assertionExecutor.setStateScreen(flowScreens.stateScreen)
             var attemptScreenshots: [XCTAttachment] = []
             var attemptWarnings: [String] = []
             var currentStepIndex = 0
@@ -947,30 +949,26 @@ public class JsonUITestRunner {
         return substituteArgsInStep(step, args: variables.asDictionary)
     }
 
-    /// The screen the previously executed inline step ran on; nil means
-    /// "unknown", which forces the next inline step to be verified.
-    private var trackedScreen: String?
-    /// Screens of the flow's viewModels whose receipt is still to be checked,
-    /// with the launch that carried their payload (spec §10.5, flows).
-    private var pendingReceipts: [String: String] = [:]
+    /// The flow's screen, `state`'s screen and the receipts still owed
+    /// (FlowScreenTracker).
+    private var flowScreens = FlowScreenTracker()
 
-    /// Implicit screen verification (canon: implicitVerification). Runs
-    /// BEFORE the step, because the step is meant to run ON that screen.
+    /// Implicit screen verification (canon: implicitVerification) and the
+    /// receipt of a screen reached for the first time. Runs BEFORE the step,
+    /// because the step is meant to run ON that screen.
     private func verifyScreenTransitionIfNeeded(_ step: FlowTestStep, warnings: inout [String]) throws {
-        guard config.verifyScreenTransitions, let screen = step.screen else { return }
-        // Same screen as the last executed step: nothing has changed.
-        guard screen != trackedScreen else { return }
-
-        try assertionExecutor.execute(
-            step: TestStep(assert: "screen", timeout: Int(config.screenTransitionTimeout * 1000), name: screen),
-            in: app
+        defer { assertionExecutor.setStateScreen(flowScreens.stateScreen) }
+        try flowScreens.enterStep(
+            screen: step.screen,
+            verifyScreens: config.verifyScreenTransitions,
+            verify: { screen in
+                try self.assertionExecutor.execute(
+                    step: TestStep(assert: "screen", timeout: Int(self.config.screenTransitionTimeout * 1000), name: screen),
+                    in: self.app
+                )
+            },
+            waitForReceipt: { screen, launchId in try self.waitForReceipt(screenId: screen, launchId: launchId) }
         )
-        trackedScreen = screen
-        // The first time the flow reaches a screen it sent an initialState
-        // for, that screen must have confirmed it.
-        if let launchId = pendingReceipts.removeValue(forKey: screen) {
-            try waitForReceipt(screenId: screen, launchId: launchId)
-        }
     }
 
     private func executeFlowStep(_ step: FlowTestStep, warnings: inout [String]) throws {
@@ -987,7 +985,6 @@ public class JsonUITestRunner {
             // A file reference carries no screen of its own, and the case it
             // runs may end anywhere — reset to unknown so the next inline
             // step is verified rather than trusted.
-            trackedScreen = nil
             try executeFileReferenceStep(step, warnings: &warnings)
             return
         }
@@ -1001,7 +998,6 @@ public class JsonUITestRunner {
         // Handle inline steps
         if step.action != nil || step.assert != nil {
             // `state` reads the step's screen, else the last one named (spec §6).
-            if let screen = step.screen { assertionExecutor.setStateScreen(screen) }
             try verifyScreenTransitionIfNeeded(step, warnings: &warnings)
             try executeStepGuarded(step.toTestStep(), warnings: &warnings)
         }
@@ -1022,10 +1018,15 @@ public class JsonUITestRunner {
         }
 
         let testCases = try loader.resolveFileReferenceCases(step)
-        // A referenced case reads its own file's screen (spec §6); the flow's
-        // screen comes back with its next step.
-        if let file = step.file, let screenTest = try? loader.resolveFileReference(file) {
-            assertionExecutor.setStateScreen(ScreenIdentity.screenId(layoutPath: screenTest.source.layout))
+        // A referenced case reads its own file's screen (spec §6); afterwards
+        // `state` goes back to the flow's last named screen.
+        let fileScreen = step.file.flatMap { try? loader.resolveFileReference($0) }
+            .map { ScreenIdentity.screenId(layoutPath: $0.source.layout) }
+        flowScreens.enterFileReference(screenOfFile: fileScreen)
+        assertionExecutor.setStateScreen(flowScreens.stateScreen)
+        defer {
+            flowScreens.leaveFileReference()
+            assertionExecutor.setStateScreen(flowScreens.stateScreen)
         }
 
         for testCase in testCases {
