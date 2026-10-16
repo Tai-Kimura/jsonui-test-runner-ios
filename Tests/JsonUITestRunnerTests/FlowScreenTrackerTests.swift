@@ -81,13 +81,18 @@ final class FlowScreenTrackerTests: XCTestCase {
         XCTAssertEqual(verified, ["home", "home"], "unknown means the next step is checked")
     }
 
-    func testOnlyAScreenNeverReachedIsWarned() throws {
+    func testAScreenStillOwingItsReceiptAtTheEndIsWarnedEvenIfAnAttemptReachedIt() throws {
+        // Attempt 1 reaches X and fails its receipt; attempt 2 passes without
+        // going back to X. X's initialState was never confirmed.
         var tracker = FlowScreenTracker()
-        tracker.startFlow(pendingReceipts: ["login": "L1", "profile": "L1"])
-        failReceipt = ["login"]
-        XCTAssertThrowsError(try step(&tracker, "login"))
+        tracker.startFlow(pendingReceipts: ["X": "L1", "Y": "L1"])
+        failReceipt = ["X"]
+        XCTAssertThrowsError(try step(&tracker, "X"))
+        tracker.startAttempt()
+        failReceipt = []
+        try step(&tracker, "Y")
         XCTAssertEqual(tracker.unreachedWarnings, [
-            "initialState for screen 'profile' was never checked: the flow never reached it (no step names that screen)"
-        ], "a reached screen whose receipt failed is a failure, not 'never reached'")
+            "initialState for screen 'X' was never checked: the flow never reached it (no step names that screen)"
+        ])
     }
 }

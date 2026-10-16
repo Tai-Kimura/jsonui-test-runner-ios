@@ -22,9 +22,6 @@ struct FlowScreenTracker {
     private var referencedScreen: String?
     /// Screen id -> the launch whose payload it has yet to confirm.
     private(set) var pendingReceipts: [String: String] = [:]
-    /// Screens the flow reached in any attempt (a reached screen whose
-    /// receipt failed is a failure, not "never reached").
-    private(set) var reached: Set<String> = []
 
     /// The screen `state` reads now.
     var stateScreen: String? { referencedScreen ?? lastNamedScreen }
@@ -32,7 +29,6 @@ struct FlowScreenTracker {
     /// A new flow file: nothing from the previous one counts.
     mutating func startFlow(pendingReceipts: [String: String]) {
         self.pendingReceipts = pendingReceipts
-        reached = []
         startAttempt()
     }
 
@@ -57,7 +53,6 @@ struct FlowScreenTracker {
         guard screen != trackedScreen else { return }
         if verifyScreens { try verify(screen) }
         trackedScreen = screen
-        reached.insert(screen)
         if let launchId = pendingReceipts[screen] {
             try waitForReceipt(screen, launchId)
             pendingReceipts.removeValue(forKey: screen)
@@ -76,10 +71,13 @@ struct FlowScreenTracker {
         referencedScreen = nil
     }
 
-    /// The warning for each screen in viewModels the flow never reached
-    /// (the same sentence as web, validate and Android).
+    /// The warning for each screen still owing its receipt when the flow
+    /// ends (spec §10.5, a3161b7; the same rule and sentence as web, validate
+    /// and Android) — including one an earlier attempt reached and failed on
+    /// that the passing attempt never went back to: its initialState was
+    /// never confirmed.
     var unreachedWarnings: [String] {
-        pendingReceipts.keys.filter { !reached.contains($0) }.sorted().map {
+        pendingReceipts.keys.sorted().map {
             "initialState for screen '\($0)' was never checked: the flow never reached it (no step names that screen)"
         }
     }
