@@ -22,7 +22,11 @@ let package = Package(
         .testTarget(
             name: "JsonUITestRunnerTests",
             dependencies: ["JsonUITestRunner"],
-            path: "Tests/JsonUITestRunnerTests"
+            path: "Tests/JsonUITestRunnerTests",
+            // Byte-identical copies of jsonui-test-runner specs/vectors/
+            // (initial-state-payload.json, state-path.json): the shared
+            // vectors this driver must pass.
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

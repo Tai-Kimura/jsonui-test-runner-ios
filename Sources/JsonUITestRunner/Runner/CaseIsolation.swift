@@ -29,8 +29,9 @@ enum ReopenedCases {
     struct Hooks<R> {
         /// The skipped row for a case gated out (skip / platform / responsive), or nil.
         let gate: (TestCase) -> R?
-        /// Bring the screen up afresh (re-apply mocks, relaunch, re-apply orientation).
-        let reopen: () throws -> Void
+        /// Bring the screen up afresh for this case (re-apply mocks, relaunch
+        /// with the case's initialState, re-apply orientation).
+        let reopen: (TestCase) throws -> Void
         let setup: () throws -> Void
         let body: (TestCase) -> R
         let teardown: () throws -> Void
@@ -69,7 +70,7 @@ enum ReopenedCases {
             let (result, attempts) = CaseRetry.run(retries: retries, isPass: hooks.isPass) { () -> R in
                 let result: R
                 do {
-                    try hooks.reopen()
+                    try hooks.reopen(testCase)
                     try hooks.setup()
                     result = hooks.body(testCase)
                 } catch {

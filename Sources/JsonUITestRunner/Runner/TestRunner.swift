@@ -26,6 +26,10 @@ public struct TestRunnerConfig {
     /// defaultTimeout: real cross-screen waits already use 15-20s after a
     /// cold start.
     public var screenTransitionTimeout: TimeInterval = 10.0
+    /// How long the runner waits for a screen to confirm the initialState it
+    /// was sent (its state bridge showing a receipt for the launch), spec
+    /// §10.5. Same name and default as the web driver's setting.
+    public var screenReadyTimeout: TimeInterval = 15.0
     /// Baseline directory for the `screenshot` assertion (default: temp dir)
     public var baselineDir: URL? = nil
     /// When true, screenshot baselines are always overwritten and the assertion passes
@@ -126,6 +130,23 @@ public struct TestCaseResult {
             skipped: skipped,
             skipReason: skipReason,
             warnings: warnings,
+            attempts: attempts,
+            declaredOrientation: declaredOrientation,
+            observedOrientation: observedOrientation
+        )
+    }
+
+    /// Copy with more warnings appended. Every field listed (see above).
+    func adding(warnings more: [String]) -> TestCaseResult {
+        TestCaseResult(
+            name: name,
+            passed: passed,
+            duration: duration,
+            error: error,
+            screenshots: screenshots,
+            skipped: skipped,
+            skipReason: skipReason,
+            warnings: warnings + more,
             attempts: attempts,
             declaredOrientation: declaredOrientation,
             observedOrientation: observedOrientation
@@ -246,32 +267,58 @@ public class JsonUITestRunner {
 
     // MARK: - Launch Configuration
 
-    /// Apply a launch configuration and (re)launch the app. Called before a test
-    /// with a `launch` block runs.
-    private func applyLaunch(_ launch: LaunchConfig) {
-        if launch.clearState == true {
-            app.launchEnvironment["JSONUI_TEST_CLEAR_STATE"] = "1"
-        }
-        if let arguments = launch.arguments, !arguments.isEmpty {
-            var plain: [String: Any] = [:]
-            for (key, value) in arguments {
-                plain[key] = value.value
-            }
-            if let data = try? JSONSerialization.data(withJSONObject: plain),
-               let json = String(data: data, encoding: .utf8) {
-                app.launchEnvironment["JSONUI_TEST_ARGS"] = json
-            }
-        }
-        // Permissions: reset to system default for `unset`. allow/deny require a
-        // UI interruption monitor installed on the host XCTestCase (see
-        // JsonUILaunchConfigurator); the runner records them as env hints.
-        if let permissions = launch.permissions {
-            if let data = try? JSONSerialization.data(withJSONObject: permissions),
-               let json = String(data: data, encoding: .utf8) {
-                app.launchEnvironment["JSONUI_TEST_PERMISSIONS"] = json
+    /// The one place the runner launches the app (spec §10.2): the four
+    /// launch keys it owns are removed and set again for this launch
+    /// (LaunchEnvironment), the initialState payload rides with a fresh
+    /// launchId, and the app launches once. Returns the launchId when a
+    /// payload went with it, for the receipt wait.
+    @discardableResult
+    private func relaunch(_ launch: LaunchConfig?, screens: [String: [String: Any]]?) -> String? {
+        var launchId: String?
+        var payload: String?
+        if let screens, !screens.isEmpty {
+            let id = UUID().uuidString
+            if let encoded = InitialStatePayload.encode(screens: screens, launchId: id) {
+                launchId = id
+                payload = encoded
             }
         }
+        app.launchEnvironment = LaunchEnvironment.environment(
+            base: app.launchEnvironment, launch: launch, initialStatePayload: payload)
         app.launch()
+        return launchId
+    }
+
+    /// Wait for `screenId` to confirm launch `launchId`'s initialState
+    /// (spec §10.5). Throws a setup failure naming the cause when it does not,
+    /// or when it rejected keys.
+    private func waitForReceipt(screenId: String, launchId: String) throws {
+        let deadline = Date().addingTimeInterval(config.screenReadyTimeout)
+        var last = StateBridge.Reading.absent
+        repeat {
+            last = StateBridge.read(screenId, in: app)
+            switch StateBridge.receipt(last, launchId: launchId) {
+            case .confirmed:
+                return
+            case .rejected(let rejections):
+                throw TestRunnerError.setupFailed(reason: StateBridge.rejectedMessage(screenId: screenId, rejections))
+            case .truncated:
+                throw TestRunnerError.setupFailed(reason: StateBridge.noReceiptMessage(
+                    screenId: screenId, timeout: config.screenReadyTimeout, lastReading: last))
+            case .waiting:
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+        } while Date() < deadline
+        throw TestRunnerError.setupFailed(reason: StateBridge.noReceiptMessage(
+            screenId: screenId, timeout: config.screenReadyTimeout, lastReading: last))
+    }
+
+    /// Launch for one entry of a plan and, when it carried a payload, wait for
+    /// the screen under test to confirm it.
+    private func launch(_ entry: InitialStatePlan.Launch, config launch: LaunchConfig?, screenId: String) throws {
+        if let launchId = relaunch(launch, screens: entry.screens) {
+            try waitForReceipt(screenId: screenId, launchId: launchId)
+        }
     }
 
     /// Set a test loader for file reference resolution
@@ -320,13 +367,20 @@ public class JsonUITestRunner {
             }
         }
 
-        // Apply launch configuration (relaunches the app) before running cases.
-        // If mocks were set but there is no launch block, still relaunch so the
-        // screen re-fetches under the new scenarios.
-        if let launch = screenTest.launch {
-            applyLaunch(launch)
-        } else if screenTest.mocks != nil {
-            app.launch()
+        // The launches this file makes and what each carries (spec §10.2),
+        // decided once. Under shared there is at most one, before the first
+        // case; it happens when the file has a launch, mocks or initialState,
+        // and its receipt is awaited before setup.
+        let plan = InitialStatePlan.plan(screenTest: screenTest)
+        let screenId = ScreenIdentity.screenId(layoutPath: screenTest.source.layout)
+        assertionExecutor.setStateScreen(screenId)
+        var launchError: Error?
+        if (screenTest.caseIsolation ?? .shared) == .shared, let entry = plan.launches.first {
+            do {
+                try launch(entry, config: screenTest.launch, screenId: screenId)
+            } catch {
+                launchError = error
+            }
         }
 
         // Orientation for this run, applied ONCE and BEFORE setup.
@@ -352,9 +406,11 @@ public class JsonUITestRunner {
 
         let caseResults: [TestCaseResult]
         if (screenTest.caseIsolation ?? .shared) == .reopen {
-            caseResults = runCasesReopened(screenTest, runDeclaredOrientation: runDeclaredOrientation)
+            caseResults = runCasesReopened(screenTest, plan: plan, screenId: screenId,
+                                           runDeclaredOrientation: runDeclaredOrientation)
         } else {
-            caseResults = runCasesShared(screenTest, runDeclaredOrientation: runDeclaredOrientation)
+            caseResults = runCasesShared(screenTest, plan: plan, launchError: launchError,
+                                         runDeclaredOrientation: runDeclaredOrientation)
         }
 
         // Reset mock scenarios so state does not leak into the next test file.
@@ -375,12 +431,16 @@ public class JsonUITestRunner {
     /// `caseIsolation: shared` (the default): setup once, every case in the
     /// one app state the previous case left (its scroll position, the screen
     /// it navigated to), teardown once. The order of the cases matters.
-    private func runCasesShared(_ screenTest: ScreenTest, runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
+    private func runCasesShared(_ screenTest: ScreenTest, plan: InitialStatePlan, launchError: Error?,
+                                runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
         var caseResults: [TestCaseResult] = []
         // Run setup once. If it throws, every case is recorded as failed but
-        // teardown still runs (§7 teardown guarantee).
-        var setupError: Error? = nil
-        if let setupSteps = screenTest.setup {
+        // teardown still runs (§7 teardown guarantee). A launch whose
+        // initialState was not confirmed fails the cases the same way, and
+        // setup does not run on an app in an unknown state.
+        var setupError: Error? = launchError
+        let needsReopen = Set(plan.caseFailures.filter { $0.code == InitialStatePlan.caseNeedsReopen }.map(\.caseName))
+        if setupError == nil, let setupSteps = screenTest.setup {
             do {
                 var warnings: [String] = []
                 try executeSteps(setupSteps, warnings: &warnings)
@@ -400,7 +460,24 @@ public class JsonUITestRunner {
                     name: testCase.name,
                     passed: false,
                     duration: 0,
-                    error: TestRunnerError.setupFailed(reason: setupError.localizedDescription)
+                    error: setupError is TestRunnerError
+                        ? setupError
+                        : TestRunnerError.setupFailed(reason: setupError.localizedDescription)
+                ))
+                continue
+            }
+
+            // A case-level initialState under shared has no launch to ride
+            // (spec §10.2): fail this case, not the file.
+            if needsReopen.contains(testCase.name) {
+                caseResults.append(TestCaseResult(
+                    name: testCase.name,
+                    passed: false,
+                    duration: 0,
+                    error: TestRunnerError.setupFailed(reason:
+                        "case '\(testCase.name)' has its own initialState, which needs caseIsolation \"reopen\": "
+                        + "under \"shared\" the screen is opened once, before the first case "
+                        + "(\(InitialStatePlan.caseNeedsReopen))")
                 ))
                 continue
             }
@@ -447,23 +524,24 @@ public class JsonUITestRunner {
     /// setup failure fails that case (the body never ran) and its teardown
     /// still runs; a teardown failure is an extra `teardown` row; a failed
     /// case stops the file unless `continueOnFailure`.
-    private func runCasesReopened(_ screenTest: ScreenTest, runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
+    private func runCasesReopened(_ screenTest: ScreenTest, plan: InitialStatePlan, screenId: String,
+                                  runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
         ReopenedCases.run(
             cases: screenTest.cases,
             retries: config.caseRetries,
             continueOnFailure: config.continueOnFailure,
             hooks: ReopenedCases.Hooks(
                 gate: { self.gateRow($0) },
-                reopen: {
+                reopen: { testCase in
                     self.currentCaseName = "setup"
                     if let mocks = screenTest.mocks {
                         try self.requireMockClient("mocks").scenarioSet(mocks)
                     }
-                    if let launch = screenTest.launch {
-                        self.applyLaunch(launch)
-                    } else {
-                        self.app.launch()
-                    }
+                    // This case's launch from the plan: the file's initialState
+                    // merged with the case's (spec §10.2).
+                    let entry = plan.launches.first { $0.before == .testCase(testCase.name) }
+                        ?? InitialStatePlan.Launch(before: .testCase(testCase.name), screens: nil)
+                    try self.launch(entry, config: screenTest.launch, screenId: screenId)
                     if let runDeclaredOrientation {
                         OrientationRuntime.apply(runDeclaredOrientation)
                     }
@@ -615,16 +693,33 @@ public class JsonUITestRunner {
             }
         }
 
-        // Apply launch configuration (relaunches the app) before running. When
-        // mocks were set without a launch block, still relaunch so startup
-        // fetches run under the new scenarios.
-        if let launch = flowTest.launch {
-            applyLaunch(launch)
-        } else if flowTest.mocks != nil {
-            app.launch()
+        // The flow's one launch (spec §10.2): when it has a launch, mocks or
+        // viewModels. Each screen in viewModels confirms its part the first
+        // time the flow reaches it (verifyScreenTransitionIfNeeded).
+        let plan = InitialStatePlan.plan(flowTest: flowTest) { [testLoader] file in
+            try? testLoader?.resolveFileReference(file)
         }
+        pendingReceipts = [:]
+        if let entry = plan.launches.first {
+            if let launchId = relaunch(flowTest.launch, screens: entry.screens) {
+                for screenId in (entry.screens ?? [:]).keys { pendingReceipts[screenId] = launchId }
+            }
+        }
+        trackedScreen = nil
+        assertionExecutor.setStateScreen(nil)
 
-        let caseResults = runFlowSteps(flowTest)
+        var caseResults = runFlowSteps(flowTest)
+
+        // Warnings the flow earns as a whole: referenced initialStates it did
+        // not apply, and screens in viewModels it never reached.
+        var flowWarnings = plan.warnings.map(InitialStatePlan.message)
+        for screenId in pendingReceipts.keys.sorted() {
+            flowWarnings.append("initialState for '\(screenId)' was sent but the flow never reached that screen, so it was not checked")
+        }
+        pendingReceipts = [:]
+        if !flowWarnings.isEmpty, let first = caseResults.first {
+            caseResults[0] = first.adding(warnings: flowWarnings)
+        }
 
         // Reset mock scenarios so a flow's setMocks state does not leak to the next test.
         try? mockClient?.reset()
@@ -855,6 +950,9 @@ public class JsonUITestRunner {
     /// The screen the previously executed inline step ran on; nil means
     /// "unknown", which forces the next inline step to be verified.
     private var trackedScreen: String?
+    /// Screens of the flow's viewModels whose receipt is still to be checked,
+    /// with the launch that carried their payload (spec §10.5, flows).
+    private var pendingReceipts: [String: String] = [:]
 
     /// Implicit screen verification (canon: implicitVerification). Runs
     /// BEFORE the step, because the step is meant to run ON that screen.
@@ -868,6 +966,11 @@ public class JsonUITestRunner {
             in: app
         )
         trackedScreen = screen
+        // The first time the flow reaches a screen it sent an initialState
+        // for, that screen must have confirmed it.
+        if let launchId = pendingReceipts.removeValue(forKey: screen) {
+            try waitForReceipt(screenId: screen, launchId: launchId)
+        }
     }
 
     private func executeFlowStep(_ step: FlowTestStep, warnings: inout [String]) throws {
@@ -897,6 +1000,8 @@ public class JsonUITestRunner {
 
         // Handle inline steps
         if step.action != nil || step.assert != nil {
+            // `state` reads the step's screen, else the last one named (spec §6).
+            if let screen = step.screen { assertionExecutor.setStateScreen(screen) }
             try verifyScreenTransitionIfNeeded(step, warnings: &warnings)
             try executeStepGuarded(step.toTestStep(), warnings: &warnings)
         }
@@ -917,6 +1022,11 @@ public class JsonUITestRunner {
         }
 
         let testCases = try loader.resolveFileReferenceCases(step)
+        // A referenced case reads its own file's screen (spec §6); the flow's
+        // screen comes back with its next step.
+        if let file = step.file, let screenTest = try? loader.resolveFileReference(file) {
+            assertionExecutor.setStateScreen(ScreenIdentity.screenId(layoutPath: screenTest.source.layout))
+        }
 
         for testCase in testCases {
             // Skip if marked to skip

@@ -1,0 +1,345 @@
+{
+  "version": 1,
+  "title": "state: bridge data + path -> value, or not resolved",
+  "description": [
+    "Shared vector for the default state provider (spec section 10.5). Run by the three drivers.",
+    "Part 1 (cases): resolve path against data. A path is split on '.'; an empty segment never resolves. On an object a segment is a key (case-sensitive, digits included); on an array a segment of decimal digits without a leading zero (0, 1, 12; not 01, -1) is an index from 0; anything else, and any step into a string / number / boolean / null, does not resolve. A key whose value is null resolves to null, which is not the same as not resolving.",
+    "Part 2 (bridges): what the driver does with the bridge itself before resolving. outcome is pending (keep waiting; the timeout message says the bridge is absent), truncated (fail at once), value, or unresolved.",
+    "A key that itself contains a '.' cannot be addressed; Data names do not contain one."
+  ],
+  "data": {
+    "email": "a@example.com",
+    "count": 3,
+    "ratio": 1.5,
+    "agreed": false,
+    "nickname": null,
+    "tags": [
+      "a",
+      "b",
+      "c"
+    ],
+    "user": {
+      "name": "N",
+      "address": {
+        "city": "Tokyo"
+      },
+      "1": "one"
+    },
+    "rows": [
+      {
+        "id": 10
+      },
+      {
+        "id": 11
+      }
+    ],
+    "empty": {}
+  },
+  "cases": [
+    {
+      "name": "email",
+      "path": "email",
+      "expect": {
+        "value": "a@example.com"
+      }
+    },
+    {
+      "name": "count",
+      "path": "count",
+      "expect": {
+        "value": 3
+      }
+    },
+    {
+      "name": "ratio",
+      "path": "ratio",
+      "expect": {
+        "value": 1.5
+      }
+    },
+    {
+      "name": "a false value resolves (it is not 'absent')",
+      "path": "agreed",
+      "expect": {
+        "value": false
+      }
+    },
+    {
+      "name": "a key holding null resolves to null — distinct from not resolving",
+      "path": "nickname",
+      "expect": {
+        "value": null
+      }
+    },
+    {
+      "name": "user.name",
+      "path": "user.name",
+      "expect": {
+        "value": "N"
+      }
+    },
+    {
+      "name": "user.address.city",
+      "path": "user.address.city",
+      "expect": {
+        "value": "Tokyo"
+      }
+    },
+    {
+      "name": "a path may end on an object; the value is the object",
+      "path": "user.address",
+      "expect": {
+        "value": {
+          "city": "Tokyo"
+        }
+      }
+    },
+    {
+      "name": "tags",
+      "path": "tags",
+      "expect": {
+        "value": [
+          "a",
+          "b",
+          "c"
+        ]
+      }
+    },
+    {
+      "name": "an array is indexed by a decimal segment, from 0",
+      "path": "tags.0",
+      "expect": {
+        "value": "a"
+      }
+    },
+    {
+      "name": "tags.2",
+      "path": "tags.2",
+      "expect": {
+        "value": "c"
+      }
+    },
+    {
+      "name": "rows.1.id",
+      "path": "rows.1.id",
+      "expect": {
+        "value": 11
+      }
+    },
+    {
+      "name": "on an object a digit segment is a key, not an index",
+      "path": "user.1",
+      "expect": {
+        "value": "one"
+      }
+    },
+    {
+      "name": "empty",
+      "path": "empty",
+      "expect": {
+        "value": {}
+      }
+    },
+    {
+      "name": "a top-level key that is not there",
+      "path": "missing",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a nested key that is not there",
+      "path": "user.age",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "an index past the end",
+      "path": "tags.3",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a negative index",
+      "path": "tags.-1",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a leading zero is not an index",
+      "path": "tags.01",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a non-digit segment on an array",
+      "path": "tags.x",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a path into a string",
+      "path": "email.length",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a path into a number",
+      "path": "count.0",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a path into null",
+      "path": "nickname.x",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "an empty segment",
+      "path": "user..name",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a leading dot",
+      "path": ".email",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "a trailing dot",
+      "path": "email.",
+      "expect": {
+        "resolved": false
+      }
+    },
+    {
+      "name": "keys are case-sensitive",
+      "path": "Email",
+      "expect": {
+        "resolved": false
+      }
+    }
+  ],
+  "bridges": [
+    {
+      "name": "no bridge for the screen (not shown yet, or a library without the bridge): still waiting inside auto-wait; on timeout, the reason says the bridge is absent",
+      "bridge": null,
+      "path": "email",
+      "expect": {
+        "outcome": "pending"
+      }
+    },
+    {
+      "name": "a truncated bridge (iOS, over 32KB) fails at once, without waiting",
+      "bridge": {
+        "truncated": 40211
+      },
+      "path": "email",
+      "expect": {
+        "outcome": "truncated"
+      }
+    },
+    {
+      "name": "a bridge without data (malformed) is pending, like an absent one",
+      "bridge": {
+        "launchId": null,
+        "initialState": null
+      },
+      "path": "email",
+      "expect": {
+        "outcome": "pending"
+      }
+    },
+    {
+      "name": "a readable bridge resolves the path in its data",
+      "bridge": {
+        "launchId": "00000000-0000-4000-8000-000000000000",
+        "initialState": null,
+        "data": {
+          "email": "a@example.com",
+          "count": 3,
+          "ratio": 1.5,
+          "agreed": false,
+          "nickname": null,
+          "tags": [
+            "a",
+            "b",
+            "c"
+          ],
+          "user": {
+            "name": "N",
+            "address": {
+              "city": "Tokyo"
+            },
+            "1": "one"
+          },
+          "rows": [
+            {
+              "id": 10
+            },
+            {
+              "id": 11
+            }
+          ],
+          "empty": {}
+        }
+      },
+      "path": "user.address.city",
+      "expect": {
+        "outcome": "value",
+        "value": "Tokyo"
+      }
+    },
+    {
+      "name": "a readable bridge whose data lacks the path: not resolved (auto-wait keeps polling; it may still appear)",
+      "bridge": {
+        "launchId": "00000000-0000-4000-8000-000000000000",
+        "initialState": null,
+        "data": {
+          "email": "a@example.com",
+          "count": 3,
+          "ratio": 1.5,
+          "agreed": false,
+          "nickname": null,
+          "tags": [
+            "a",
+            "b",
+            "c"
+          ],
+          "user": {
+            "name": "N",
+            "address": {
+              "city": "Tokyo"
+            },
+            "1": "one"
+          },
+          "rows": [
+            {
+              "id": 10
+            },
+            {
+              "id": 11
+            }
+          ],
+          "empty": {}
+        }
+      },
+      "path": "missing",
+      "expect": {
+        "outcome": "unresolved"
+      }
+    }
+  ]
+}

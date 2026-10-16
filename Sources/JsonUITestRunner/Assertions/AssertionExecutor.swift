@@ -12,6 +12,9 @@ public protocol AssertionExecutor {
     /// Warnings produced by the last executed step (e.g. baseline created); drained by the runner.
     var warnings: [String] { get }
     func drainWarnings() -> [String]
+    /// The screen whose state bridge `state` reads when no provider was
+    /// passed (spec §6): the runner sets it as screens change.
+    func setStateScreen(_ screenId: String?)
 }
 
 /// Errors that can occur during assertion execution
@@ -21,6 +24,8 @@ public enum AssertionError: Error, LocalizedError {
     case missingParameter(assertion: String, parameter: String)
     case assertionFailed(assertion: String, expected: String, actual: String)
     case stateNotAccessible(path: String)
+    /// The iOS state bridge is over its 32KB limit: nothing in it can be read.
+    case stateBridgeTruncated(screenId: String, bytes: Int)
     case screenshotUnavailable(reason: String)
     /// An auto-waiting assertion whose reason changed while it waited: the
     /// failure it ended on, followed by every reason with its span
@@ -38,7 +43,9 @@ public enum AssertionError: Error, LocalizedError {
         case .assertionFailed(let assertion, let expected, let actual):
             return "Assertion '\(assertion)' failed - Expected: \(expected), Actual: \(actual)"
         case .stateNotAccessible(let path):
-            return "Cannot access ViewModel state at path: '\(path)'"
+            return "Cannot access ViewModel state at path: '\(path)' — no screen to read it from (a flow step names none yet) and no state provider was passed"
+        case .stateBridgeTruncated(let screenId, let bytes):
+            return "The state bridge of '\(screenId)' is \(bytes) bytes; the iOS bridge holds up to 32KB, so `state` cannot read this screen"
         case .screenshotUnavailable(let reason):
             return "Screenshot assertion unavailable: \(reason)"
         case .timedOut(let last, let history):
@@ -71,6 +78,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
     /// defaultTimeout so raising one does not silently raise the other.
     private let screenTransitionTimeout: TimeInterval
     private var stateProvider: ViewModelStateProvider?
+    /// The screen `state` reads when no provider was passed (spec §6).
+    private var stateScreen: String?
     private let baselineDir: URL
     private let updateBaselines: Bool
     private var collectedWarnings: [String] = []
@@ -94,6 +103,17 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
 
     public func setStateProvider(_ provider: ViewModelStateProvider) {
         self.stateProvider = provider
+    }
+
+    public func setStateScreen(_ screenId: String?) {
+        self.stateScreen = screenId
+    }
+
+    /// One read of `path` through the default provider: the state bridge of
+    /// `stateScreen` (spec §10.5).
+    private func bridgeOutcome(path: String, in app: XCUIApplication) throws -> StateBridge.Outcome {
+        guard let screenId = stateScreen else { throw AssertionError.stateNotAccessible(path: path) }
+        return StateBridge.outcome(StateBridge.read(screenId, in: app), path: path)
     }
 
     public func drainWarnings() -> [String] {
@@ -125,7 +145,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         case "count":
             try assertCount(step: step, timeout: timeout, in: app)
         case "state":
-            try assertState(step: step, timeout: timeout)
+            try assertState(step: step, timeout: timeout, in: app)
         case "screenshot":
             try assertScreenshot(step: step, in: app)
         case "screen":
@@ -172,13 +192,20 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             return false
         }
         if let stateCondition = condition.state {
-            guard let provider = stateProvider else {
-                throw AssertionError.stateNotAccessible(path: stateCondition.path)
+            if let provider = stateProvider {
+                guard let actual = provider.getValue(at: stateCondition.path) else {
+                    return false
+                }
+                return valuesMatch(expected: stateCondition.equals, actual: actual)
             }
-            guard let actual = provider.getValue(at: stateCondition.path) else {
+            switch try bridgeOutcome(path: stateCondition.path, in: app) {
+            case .value(let actual):
+                return valuesMatch(expected: stateCondition.equals, actual: actual)
+            case .pending, .unresolved:
                 return false
+            case .truncated(let bytes):
+                throw AssertionError.stateBridgeTruncated(screenId: stateScreen ?? "", bytes: bytes)
             }
-            return valuesMatch(expected: stateCondition.equals, actual: actual)
         }
         return true
     }
@@ -385,26 +412,55 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         }
     }
 
-    private func assertState(step: TestStep, timeout: TimeInterval) throws {
+    private func assertState(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {
         guard let path = step.path else {
             throw AssertionError.missingParameter(assertion: "state", parameter: "path")
         }
         guard let expectedValue = step.equals else {
             throw AssertionError.missingParameter(assertion: "state", parameter: "equals")
         }
-        guard let provider = stateProvider else {
-            throw AssertionError.stateNotAccessible(path: path)
+
+        // A provider the harness passed wins; otherwise the state bridge of the
+        // screen the runner names (spec §6, §10.5).
+        if let provider = stateProvider {
+            try pollUntil(timeout: timeout) {
+                guard let actual = provider.getValue(at: path) else { return "nil" }
+                return self.valuesMatch(expected: expectedValue, actual: actual) ? nil : String(describing: actual)
+            } onTimeout: { reason in
+                AssertionError.assertionFailed(
+                    assertion: "state",
+                    expected: String(describing: expectedValue.value),
+                    actual: "\(reason) at '\(path)'"
+                )
+            }
+            return
         }
 
+        guard let screenId = stateScreen else { throw AssertionError.stateNotAccessible(path: path) }
+        // A truncated bridge ends the wait at once; pollUntil's check cannot
+        // throw, so it stops the poll and the throw happens here.
+        var truncated: Int?
         try pollUntil(timeout: timeout) {
-            guard let actual = provider.getValue(at: path) else { return "nil" }
-            return self.valuesMatch(expected: expectedValue, actual: actual) ? nil : String(describing: actual)
+            switch StateBridge.outcome(StateBridge.read(screenId, in: app), path: path) {
+            case .pending:
+                return "no state bridge for '\(screenId)' (the screen is not showing, or its library predates the bridge: SwiftJsonUI 10.30.0)"
+            case .truncated(let bytes):
+                truncated = bytes
+                return nil
+            case .unresolved:
+                return "path not resolved in the data of '\(screenId)'"
+            case .value(let actual):
+                return self.valuesMatch(expected: expectedValue, actual: actual) ? nil : String(describing: actual)
+            }
         } onTimeout: { reason in
             AssertionError.assertionFailed(
                 assertion: "state",
                 expected: String(describing: expectedValue.value),
                 actual: "\(reason) at '\(path)'"
             )
+        }
+        if let truncated {
+            throw AssertionError.stateBridgeTruncated(screenId: screenId, bytes: truncated)
         }
     }
 

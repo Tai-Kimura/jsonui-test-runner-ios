@@ -109,52 +109,31 @@ func testWithCustomConfig() throws {
 }
 ```
 
-### ViewModel状態の検証
+### ViewModel状態の検証（`state`）と initialState
 
-`state` アサーションを使うには、`ViewModelStateProvider` を実装:
+1.15.0 から、ハーネスは何も渡さなくてよい。SwiftJsonUI ≥ 10.30.0 と同じ列車の jsonui-cli で生成した画面は、
+自分の Data を「state ブリッジ」（アクセシビリティ要素 `__state_<screenId>` の value）に出す。
+`state` アサーションと `when.state` は、既定でその `data` を path でたどる。
+
+- 読む画面: screen test はテスト対象画面（`source.layout` の screen id）。flow は step の `screen`、無ければ直前に名前が出た画面。flow から参照した case は、参照先ファイルの画面。
+- ブリッジが無い（画面がまだ出ていない、またはライブラリが古い）ときは auto-wait の中で待ち、timeout でその理由を出す。32KB を超えたブリッジ（`{"truncated": …}`）は即失敗する。
+- アプリのプロセスはテストランナーと別なので、ViewModel を直接読む provider は書けない。それでも独自の provider を渡したい場合は、`createRunner(app:stateProvider:)` で渡せば、そちらを優先する。
+
+`initialState`（ファイル単位、case 単位は `caseIsolation: "reopen"` のとき、flow は `viewModels`）は、起動時に launch environment `JSONUI_TEST_INITIAL_STATE` で渡る。
+画面が最初に表示されたときに一度だけ Data に入り、ブリッジに受領（applied / rejected）が出る。
+runner は `screenReadyTimeout`（既定 15 秒）のあいだ受領を待つ。受領が無い、または rejected がある場合は、その case を `setup` の失敗にする。
+キーは Data 名だけ、値は Data の class に合う JSON だけが入る（仕様: jsonui-test-runner `specs/2026-07-08-advanced-test-features.md` §10）。
 
 ```swift
-class MyStateProvider: ViewModelStateProvider {
-    let viewModel: LoginViewModel
-
-    init(viewModel: LoginViewModel) {
-        self.viewModel = viewModel
-    }
-
-    func getValue(at path: String) -> Any? {
-        switch path {
-        case "isLoading":
-            return viewModel.isLoading
-        case "email":
-            return viewModel.email
-        case "errorMessage":
-            return viewModel.errorMessage
-        default:
-            return nil
-        }
-    }
-}
-
-// テストで使用
-func testWithStateValidation() throws {
-    let stateProvider = MyStateProvider(viewModel: viewModel)
-    let runner = JsonUITest.createRunner(
-        app: app,
-        stateProvider: stateProvider
-    )
-
-    let test = try JsonUITest.loadFromBundle(name: "login.test")
-
-    switch test {
-    case .screen(let screenTest):
-        let result = runner.run(screenTest: screenTest)
-        XCTAssertTrue(result.allPassed)
-    case .flow(let flowTest):
-        let result = runner.run(flowTest: flowTest)
-        XCTAssertTrue(result.allPassed)
-    }
-}
+var config = TestRunnerConfig()
+config.screenReadyTimeout = 20.0   // 受領を待つ時間（既定 15 秒）
 ```
+
+### 起動の環境変数（runner が持つキー）
+
+runner は `JSONUI_TEST_CLEAR_STATE` / `JSONUI_TEST_ARGS` / `JSONUI_TEST_PERMISSIONS` / `JSONUI_TEST_INITIAL_STATE` の 4 つを持つ。
+起動のたびに 4 つとも消してから、その起動の分を設定し直す。前のファイルの `launch` は次のファイルの起動に残らない。
+ハーネスが自分で `app.launchEnvironment` に入れたほかのキーには触らない。
 
 ## テストJSONファイルの配置
 

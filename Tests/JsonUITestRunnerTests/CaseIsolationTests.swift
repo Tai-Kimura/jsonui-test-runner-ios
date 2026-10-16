@@ -75,7 +75,7 @@ final class CaseIsolationTests: XCTestCase {
             continueOnFailure: continueOnFailure,
             hooks: ReopenedCases.Hooks<Row>(
                 gate: { $0.skip == true ? Row(name: $0.name, passed: true, skipped: true) : nil },
-                reopen: { seq.append("reopen") },
+                reopen: { _ in seq.append("reopen") },
                 setup: {
                     setups += 1
                     seq.append("setup")

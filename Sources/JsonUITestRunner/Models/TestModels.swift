@@ -192,8 +192,10 @@ public struct FlowTestSource: Codable {
     public let alias: String?
 }
 
+/// A flow's initialState: screen id -> (Data name -> value), delivered with
+/// the flow's one launch (spec §10.2). `screen` is gone from the schema; a
+/// file that still writes it is a validate error, and this decoder ignores it.
 public struct FlowInitialState: Codable {
-    public let screen: String?
     public let viewModels: [String: [String: AnyCodable]]?
 }
 
