@@ -59,25 +59,42 @@ enum ReopenedCases {
     ///   shared path. Every case after the stop still gets a row (`CaseStop`):
     ///   its gate row if it is gated, else a skipped row. Nothing is reopened
     ///   for them.
+    /// - Progress (when given): a gated case, and a case after the stop, is one
+    ///   skipped case_end; every attempt — reopen and setup included, they are
+    ///   part of it — is a case_start / case_end pair; a teardown row is a
+    ///   failed pair of its own.
     static func run<R>(
         cases: [TestCase],
         retries: Int,
         continueOnFailure: Bool,
+        progress: (reporter: TestProgressReporter, file: String, test: String, rowName: (R) -> String)? = nil,
         hooks: Hooks<R>
     ) -> [R] {
         var rows: [R] = []
         var stopped = false
+        // The reporter and the case a line is about, when progress is wanted.
+        func progressCase(_ name: String) -> (TestProgressReporter, ProgressRecord.Case)? {
+            progress.map { ($0.reporter, ProgressRecord.Case(file: $0.file, test: $0.test, name: name)) }
+        }
         for testCase in cases {
             if let gated = hooks.gate(testCase) {
                 rows.append(gated)
+                if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
                 continue
             }
             if stopped {
                 rows.append(hooks.stoppedAfterFailure(testCase))
+                if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
                 continue
             }
             var teardownError: Error?
-            let (result, attempts) = CaseRetry.run(retries: retries, isPass: hooks.isPass) { () -> R in
+            let retry: (() -> R) -> (result: R, attempts: Int) = { attempt in
+                if case let (reporter, id)? = progressCase(testCase.name) {
+                    return reporter.retrying(id, retries: retries, isPass: hooks.isPass, attempt: attempt)
+                }
+                return CaseRetry.run(retries: retries, isPass: hooks.isPass, attempt: attempt)
+            }
+            let (result, attempts) = retry { () -> R in
                 let result: R
                 do {
                     try hooks.reopen(testCase)
@@ -96,7 +113,11 @@ enum ReopenedCases {
             }
             rows.append(hooks.stampAttempts(result, attempts))
             if let teardownError {
-                rows.append(hooks.teardownFailed(testCase, teardownError))
+                let row = hooks.teardownFailed(testCase, teardownError)
+                rows.append(row)
+                if let progress, case let (reporter, id)? = progressCase(progress.rowName(row)) {
+                    reporter.caseFailedWithoutRunning(id)
+                }
             }
             if !hooks.isPass(result) && !continueOnFailure {
                 stopped = true
@@ -128,20 +149,36 @@ enum SharedCases {
         let isPass: (R) -> Bool
     }
 
-    static func run<R>(cases: [TestCase], continueOnFailure: Bool, hooks: Hooks<R>) -> [R] {
+    /// Progress (when given): a gated case, and a case after the stop, is one
+    /// skipped case_end; a case that cannot run is one failed case_end. The
+    /// body emits its own attempts (the runner's retry loop does).
+    static func run<R>(
+        cases: [TestCase],
+        continueOnFailure: Bool,
+        progress: (reporter: TestProgressReporter, file: String, test: String, rowName: (R) -> String)? = nil,
+        hooks: Hooks<R>
+    ) -> [R] {
         var rows: [R] = []
         var stopped = false
+        func progressCase(_ name: String) -> (TestProgressReporter, ProgressRecord.Case)? {
+            progress.map { ($0.reporter, ProgressRecord.Case(file: $0.file, test: $0.test, name: name)) }
+        }
         for testCase in cases {
             if let gated = hooks.gate(testCase) {
                 rows.append(gated)
+                if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
                 continue
             }
             if stopped {
                 rows.append(hooks.stoppedAfterFailure(testCase))
+                if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
                 continue
             }
             if let failed = hooks.unrunnable(testCase) {
                 rows.append(failed)
+                if let progress, case let (reporter, id)? = progressCase(progress.rowName(failed)) {
+                    reporter.caseFailedWithoutRunning(id)
+                }
                 continue
             }
             let result = hooks.body(testCase)

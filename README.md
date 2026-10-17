@@ -139,6 +139,20 @@ runner は `JSONUI_TEST_CLEAR_STATE` / `JSONUI_TEST_ARGS` / `JSONUI_TEST_PERMISS
 起動のたびに 4 つとも消してから、その起動の分を設定し直す。前のファイルの `launch` は次のファイルの起動に残らない。
 ハーネスが自分で `app.launchEnvironment` に入れたほかのキーには触らない。
 
+### 進捗レコード（`jui viz` が読む）
+
+runner は実行中の進捗を 1 行 1 JSON（jsonui-test-runner `schemas/progress.schema.json`）で unified logging に出す。
+subsystem `com.jsonui.testrunner`、category `progress`、info、public。常に出る（verbose とは無関係）。出力の失敗は結果を変えない。
+
+```bash
+xcrun simctl spawn <udid> log stream --style ndjson --level info \
+  --predicate 'subsystem == "com.jsonui.testrunner" AND category == "progress"'
+```
+
+- `run(screenTest:)` / `run(flowTest:)` の 1 回が 1 run（`run_start` … `run_end`）。`run_end` の件数は results.json と同じ数え方。
+- case は試行ごとに `case_start` / `case_end`（`attempt` 1, 2, …）。実行されなかった case は `attempt: 0` の `case_end`（skipped）1 行だけ。setup や起動の失敗の行、`teardown` の行も 1 組出る。
+- `test` / `case` は results.json の testName / caseName と同じ。`file` は `TestLoader` が読んだファイルの、読んだ root（bundle の resources、`loadAll` のディレクトリ）からの相対パス。コードで組んだテストや inline JSON は `"inline"`。
+
 ## テストJSONファイルの配置
 
 1. テストJSONファイルを作成 (例: `login.test.json`)

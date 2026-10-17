@@ -78,13 +78,35 @@ public class TestLoader {
     /// flow's. Reading a file BECAUSE a flow referenced it is not a load in
     /// this sense — see `readTestFile(at:)`.
     public func load(from url: URL) throws -> LoadedTest {
+        try load(from: url, root: nil)
+    }
+
+    /// `load(from:)` with the root the test's `sourceFile` is relative to —
+    /// the bundle's resources, or the directory `loadAll` walks. With no
+    /// root, the file's own directory: the name alone.
+    private func load(from url: URL, root: URL?) throws -> LoadedTest {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw TestLoaderError.fileNotFound(path: url.path)
         }
 
         // Store base path for file reference resolution
         basePath = url.deletingLastPathComponent()
-        return try readTestFile(at: url)
+        return try readTestFile(at: url).sourced(Self.relativePath(of: url, under: root))
+    }
+
+    /// `url` relative to `root`, '/'-separated; the last component when
+    /// there is no root or `url` is not under it. Both sides are resolved
+    /// first — on a simulator a bundle path can come back as `/var/…` on one
+    /// side and `/private/var/…` on the other.
+    static func relativePath(of url: URL, under root: URL?) -> String {
+        let file = url.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        if let root {
+            let base = root.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+            if file.count > base.count, Array(file.prefix(base.count)) == base {
+                return file.dropFirst(base.count).joined(separator: "/")
+            }
+        }
+        return url.lastPathComponent
     }
 
     /// Read and parse a test file WITHOUT touching the base.
@@ -113,7 +135,7 @@ public class TestLoader {
             throw TestLoaderError.bundleResourceNotFound(name: name)
         }
 
-        return try load(from: url)
+        return try load(from: url, root: bundle.resourceURL)
     }
 
     /// Load all tests from a directory
@@ -141,7 +163,7 @@ public class TestLoader {
         while let fileURL = enumerator.nextObject() as? URL {
             if fileURL.pathExtension == "json" && fileURL.lastPathComponent.contains(".test.") {
                 do {
-                    let test = try load(from: fileURL)
+                    let test = try load(from: fileURL, root: directory)
                     tests.append(test)
                 } catch {
                     failures.append((path: fileURL.path, reason: error.localizedDescription))
@@ -183,6 +205,20 @@ public class TestLoader {
             return .flow(flowTest)
         default:
             throw TestLoaderError.unsupportedTestType(type: type)
+        }
+    }
+}
+
+extension LoadedTest {
+    /// The same test with its `sourceFile` set.
+    func sourced(_ file: String) -> LoadedTest {
+        switch self {
+        case .screen(var test):
+            test.sourceFile = file
+            return .screen(test)
+        case .flow(var test):
+            test.sourceFile = file
+            return .flow(test)
         }
     }
 }

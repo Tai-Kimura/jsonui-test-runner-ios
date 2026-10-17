@@ -92,7 +92,9 @@ public enum ResultsWriter {
         ]
     }
 
-    private static func status(for result: TestCaseResult) -> String {
+    /// The row's status. Internal so run_end's counts (TestProgressReporter) come
+    /// from this one rule rather than a second copy of it.
+    static func status(for result: TestCaseResult) -> String {
         if result.skipped { return "skipped" }
         return result.passed ? "passed" : "failed"
     }

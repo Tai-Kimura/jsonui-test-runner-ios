@@ -49,6 +49,17 @@ public struct ScreenTest: Codable {
     public let setup: [TestStep]?
     public let teardown: [TestStep]?
     public let cases: [TestCase]
+    /// The file this test was read from, relative to the root it was loaded
+    /// from ('/'-separated); set by `TestLoader`, nil for a test built in
+    /// code or from inline JSON. Not a key of the file — the progress
+    /// records' `file` (TestProgressReporter).
+    public internal(set) var sourceFile: String? = nil
+
+    // Listed so `sourceFile` stays out of decoding. A new key goes here too.
+    private enum CodingKeys: String, CodingKey {
+        case type, source, metadata, platform, orientation, initialState, launch
+        case mocks, caseIsolation, setup, teardown, cases
+    }
 }
 
 // MARK: - Launch Configuration
@@ -184,6 +195,14 @@ public struct FlowTest: Codable {
     public let teardown: [FlowTestStep]?
     public let steps: [FlowTestStep]
     public let checkpoints: [Checkpoint]?
+    /// The file this flow was read from (see `ScreenTest.sourceFile`).
+    public internal(set) var sourceFile: String? = nil
+
+    // Listed so `sourceFile` stays out of decoding. A new key goes here too.
+    private enum CodingKeys: String, CodingKey {
+        case type, sources, metadata, orientation, platform, initialState, launch
+        case mocks, setup, teardown, steps, checkpoints
+    }
 }
 
 public struct FlowTestSource: Codable {

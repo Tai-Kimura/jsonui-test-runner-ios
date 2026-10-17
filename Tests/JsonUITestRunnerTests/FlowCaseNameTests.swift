@@ -44,7 +44,12 @@ final class FlowCaseNameTests: XCTestCase {
         XCTAssertFalse(text.contains("name: flowTest.metadata.name"), "a flow row named after the flow")
         XCTAssertFalse(text.contains("currentCaseName = flowTest.metadata.name"), "flow artifacts named after the flow")
         XCTAssertTrue(text.contains("currentCaseName = FlowRows.caseName"))
-        XCTAssertEqual(text.components(separatedBy: "FlowRows.").count - 1, 4,
-                       "platformSkipped, notStarted, body, caseName")
+        // Progress lines name the case as results.json does (progress.schema.json).
+        XCTAssertFalse(text.contains("progressCase(flowTest.metadata.name, flowTest.metadata.name)"),
+                       "a flow's progress lines named after the flow")
+        XCTAssertEqual(text.components(separatedBy: "progressCase(flowTest.metadata.name, FlowRows.caseName)").count - 1, 3,
+                       "the progress lines of a platform skip, a flow that could not start, and the body")
+        XCTAssertEqual(text.components(separatedBy: "FlowRows.").count - 1, 7,
+                       "platformSkipped, notStarted, body, caseName, and caseName in the 3 progress lines")
     }
 }

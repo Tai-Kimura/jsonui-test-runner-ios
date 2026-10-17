@@ -212,6 +212,13 @@ public class JsonUITestRunner {
     /// to read it should be reported once rather than per case. Not folded to
     /// an empty table on failure — see `RunDefaults.Load`.
     private lazy var runDefaults: RunDefaults.Load = RunDefaults.load()
+    /// Progress records (progress.schema.json) to unified logging. Internal
+    /// and settable so a test can give it another sink.
+    var progress = TestProgressReporter()
+    /// The file the progress lines of this run name: the test's `sourceFile`
+    /// when a TestLoader read it, else "inline" (built in code or from inline
+    /// JSON — the same word TestLoaderError uses for that path).
+    private var progressFile = "inline"
 
     public init(
         app: XCUIApplication,
@@ -331,6 +338,10 @@ public class JsonUITestRunner {
     /// Run a screen test
     public func run(screenTest: ScreenTest) -> TestRunResult {
         let startTime = Date()
+        // One file per run: the one this call was given (a flow's referenced
+        // files are read too, but emit nothing of their own).
+        progressFile = screenTest.sourceFile ?? "inline"
+        progress.runStarted(files: 1)
 
         // Test-level platform gate: emit one skipped row PER CASE (never an
         // empty caseResults) so a file-level skip stays visible in the report
@@ -339,12 +350,16 @@ public class JsonUITestRunner {
             let skippedRows = screenTest.cases.map {
                 TestCaseResult(name: $0.name, passed: true, duration: 0, skipped: true, skipReason: .platform)
             }
+            for row in skippedRows {
+                progress.caseSkipped(progressCase(screenTest.metadata.name, row.name))
+            }
             let result = TestRunResult(
                 testName: screenTest.metadata.name,
                 caseResults: skippedRows,
                 totalDuration: Date().timeIntervalSince(startTime)
             )
             writeResultsIfNeeded(result)
+            progress.runEnded(rows: result.caseResults)
             return result
         }
 
@@ -363,6 +378,10 @@ public class JsonUITestRunner {
                 let failed = screenTest.cases.map {
                     TestCaseResult(name: $0.name, passed: false, duration: 0, error: error)
                 }
+                for row in failed {
+                    progress.caseFailedWithoutRunning(progressCase(screenTest.metadata.name, row.name))
+                }
+                progress.runEnded(rows: failed)
                 return TestRunResult(testName: screenTest.metadata.name, caseResults: failed, totalDuration: Date().timeIntervalSince(startTime))
             }
         }
@@ -425,7 +444,13 @@ public class JsonUITestRunner {
             totalDuration: totalDuration
         )
         writeResultsIfNeeded(result)
+        progress.runEnded(rows: result.caseResults)
         return result
+    }
+
+    /// The case a progress line is about, in this run's file.
+    private func progressCase(_ testName: String, _ caseName: String) -> ProgressRecord.Case {
+        ProgressRecord.Case(file: progressFile, test: testName, name: caseName)
     }
 
     /// `caseIsolation: shared` (the default): setup once, every case in the
@@ -449,9 +474,11 @@ public class JsonUITestRunner {
             }
         }
 
+        let testName = screenTest.metadata.name
         caseResults = SharedCases.run(
             cases: screenTest.cases,
             continueOnFailure: config.continueOnFailure,
+            progress: (progress, progressFile, testName, { $0.name }),
             hooks: SharedCases.Hooks(
                 gate: { self.gateRow($0) },
                 unrunnable: { testCase in
@@ -486,7 +513,7 @@ public class JsonUITestRunner {
                     // include a `setOrientation` step the case performed. Only on rows
                     // that ran — a skipped case has no orientation to report, the same
                     // reason `attempts` is absent there.
-                    self.runTestCaseWithRetries(testCase).stamping(
+                    self.runTestCaseWithRetries(testCase, testName: testName).stamping(
                         declared: OrientationRuntime.declaredForCase(
                             steps: testCase.steps, runDeclared: runDeclaredOrientation),
                         observed: OrientationRuntime.observe(app: self.app)
@@ -505,6 +532,7 @@ public class JsonUITestRunner {
                 try executeSteps(teardownSteps, warnings: &warnings)
             } catch {
                 caseResults.append(TestCaseResult(name: "teardown", passed: false, duration: 0, error: error))
+                progress.caseFailedWithoutRunning(progressCase(testName, "teardown"))
             }
         }
 
@@ -529,6 +557,7 @@ public class JsonUITestRunner {
             cases: screenTest.cases,
             retries: config.caseRetries,
             continueOnFailure: config.continueOnFailure,
+            progress: (progress, progressFile, screenTest.metadata.name, { $0.name }),
             hooks: ReopenedCases.Hooks(
                 gate: { self.gateRow($0) },
                 reopen: { testCase in
@@ -613,8 +642,9 @@ public class JsonUITestRunner {
     /// while it fails. The returned result is the final attempt's, stamped
     /// with the total attempt count (skips are handled by the caller and
     /// never reach this).
-    private func runTestCaseWithRetries(_ testCase: TestCase) -> TestCaseResult {
-        let (result, attempts) = CaseRetry.run(
+    private func runTestCaseWithRetries(_ testCase: TestCase, testName: String) -> TestCaseResult {
+        let (result, attempts) = progress.retrying(
+            progressCase(testName, testCase.name),
             retries: config.caseRetries,
             isPass: { (r: TestCaseResult) in r.passed }
         ) { runTestCase(testCase) }
@@ -659,6 +689,8 @@ public class JsonUITestRunner {
     /// Run a flow test
     public func run(flowTest: FlowTest) -> TestRunResult {
         let startTime = Date()
+        progressFile = flowTest.sourceFile ?? "inline"
+        progress.runStarted(files: 1)
 
         // Flow-level platform gate: emit one skipped row (never an empty
         // caseResults, which made the flow vanish from the report) — the
@@ -669,7 +701,9 @@ public class JsonUITestRunner {
                 caseResults: [FlowRows.platformSkipped()],
                 totalDuration: 0
             )
+            progress.caseSkipped(progressCase(flowTest.metadata.name, FlowRows.caseName))
             writeResultsIfNeeded(result)
+            progress.runEnded(rows: result.caseResults)
             return result
         }
 
@@ -686,7 +720,9 @@ public class JsonUITestRunner {
                     caseResults: [FlowRows.notStarted(error: error)],
                     totalDuration: Date().timeIntervalSince(startTime)
                 )
+                progress.caseFailedWithoutRunning(progressCase(flowTest.metadata.name, FlowRows.caseName))
                 writeResultsIfNeeded(result)
+                progress.runEnded(rows: result.caseResults)
                 return result
             }
         }
@@ -729,6 +765,7 @@ public class JsonUITestRunner {
             totalDuration: totalDuration
         )
         writeResultsIfNeeded(result)
+        progress.runEnded(rows: result.caseResults)
         return result
     }
 
@@ -749,9 +786,13 @@ public class JsonUITestRunner {
         // (same rule as the `retry` step) — the last attempt's survive.
         let maxAttempts = max(0, config.caseRetries) + 1
         var flowAttempts = 0
+        // The flow body is the flow's one case: a progress pair per attempt.
+        let flowCase = progressCase(flowTest.metadata.name, FlowRows.caseName)
         repeat {
             flowAttempts += 1
             flowError = nil
+            let attemptStart = Date()
+            progress.caseStarted(flowCase, attempt: flowAttempts)
             // Each attempt starts from "unknown" (FlowScreenTracker).
             flowScreens.startAttempt()
             assertionExecutor.setStateScreen(flowScreens.stateScreen)
@@ -798,6 +839,9 @@ public class JsonUITestRunner {
                 }
             }
 
+            progress.caseEnded(flowCase, attempt: flowAttempts, passed: flowError == nil,
+                               duration: Date().timeIntervalSince(attemptStart))
+
             if flowError == nil || flowAttempts >= maxAttempts {
                 warnings.append(contentsOf: attemptWarnings)
                 screenshots.append(contentsOf: attemptScreenshots)
@@ -823,6 +867,7 @@ public class JsonUITestRunner {
                 }
             } catch {
                 results.append(TestCaseResult(name: "teardown", passed: false, duration: 0, error: error))
+                progress.caseFailedWithoutRunning(progressCase(flowTest.metadata.name, "teardown"))
             }
         }
 
