@@ -332,7 +332,6 @@ final class ProgressReporterTests: XCTestCase {
             teardown: { if teardownThrows { throw SinkFailure() } },
             setupFailed: { tc, _ in Row(name: tc.name, passed: false) },
             teardownFailed: { _, _ in Row(name: "teardown", passed: false) },
-            stoppedAfterFailure: { Row(name: $0.name, passed: true, skipped: true) },
             isPass: { $0.passed },
             stampAttempts: { row, _ in row }
         )
@@ -344,7 +343,6 @@ final class ProgressReporterTests: XCTestCase {
         let rows = ReopenedCases.run(
             cases: reopenCases(["skipped one", "flaky", "good"], skip: ["skipped one"]),
             retries: 1,
-            continueOnFailure: true,
             progress: (r, "screens/x/x.test.json", "x", { $0.name }),
             hooks: reopenHooks(failing: ["flaky"], teardownThrows: false)
         )
@@ -359,7 +357,7 @@ final class ProgressReporterTests: XCTestCase {
 
         let torn = RecordingSink()
         _ = ReopenedCases.run(
-            cases: reopenCases(["good"]), retries: 0, continueOnFailure: true,
+            cases: reopenCases(["good"]), retries: 0,
             progress: (reporter(torn), "f.test.json", "x", { $0.name }),
             hooks: reopenHooks(failing: [], teardownThrows: true)
         )
@@ -371,9 +369,9 @@ final class ProgressReporterTests: XCTestCase {
 
     func testReopenRowsAreTheSameWithAThrowingSinkAsWithNone() {
         let cases = reopenCases(["a", "b", "c"], skip: ["b"])
-        let none = ReopenedCases.run(cases: cases, retries: 2, continueOnFailure: true,
+        let none = ReopenedCases.run(cases: cases, retries: 2,
                                      hooks: reopenHooks(failing: ["c"], teardownThrows: true))
-        let throwing = ReopenedCases.run(cases: cases, retries: 2, continueOnFailure: true,
+        let throwing = ReopenedCases.run(cases: cases, retries: 2,
                                          progress: (reporter(ThrowingSink()), "f", "t", { $0.name }),
                                          hooks: reopenHooks(failing: ["c"], teardownThrows: true))
         XCTAssertEqual(none.map { "\($0.name)/\($0.passed)/\($0.skipped)" },
@@ -392,7 +390,7 @@ final class ProgressReporterTests: XCTestCase {
         r.runStarted(files: 1, environment: [:])
         var current = ""
         let rows = ReopenedCases.run(
-            cases: cases, retries: 1, continueOnFailure: true,
+            cases: cases, retries: 1,
             progress: (r, "screens/x/x.test.json", "x", { $0.name }),
             hooks: ReopenedCases.Hooks<TestCaseResult>(
                 gate: { $0.skip == true ? TestCaseResult(name: $0.name, passed: true, duration: 0, skipped: true) : nil },
@@ -402,7 +400,6 @@ final class ProgressReporterTests: XCTestCase {
                 teardown: { if current == "passes, teardown fails" { throw LaunchFailed() } },
                 setupFailed: { tc, error in TestCaseResult(name: tc.name, passed: false, duration: 0, error: error) },
                 teardownFailed: { _, error in TestCaseResult(name: "teardown", passed: false, duration: 0, error: error) },
-                stoppedAfterFailure: { CaseStop.skippedRow($0) },
                 isPass: { $0.passed },
                 stampAttempts: { $0.stamping(attempts: $1) }
             )
@@ -443,72 +440,65 @@ final class ProgressReporterTests: XCTestCase {
         XCTAssertEqual([end["passed"] as? Int, end["failed"] as? Int, end["skipped"] as? Int], [1, 5, 1])
     }
 
-    // MARK: a stop after a failure (continueOnFailure false)
+    // MARK: a failure does not stop the file
 
-    /// The cases after the stop are skipped rows (CaseStop), so each has one
-    /// case_end — attempt 0, skipped, durationMs 0, no case_start — and the
-    /// lines still close to run_end: one final case_end per results row.
-    private func assertStopLines(_ sink: RecordingSink, rows: [Row], file: StaticString = #filePath, line: UInt = #line) {
+    /// The cases after a failure run, so each has its own case_start /
+    /// case_end pair — none is a skipped attempt-0 line — and the lines still
+    /// close to run_end: one final case_end per results row.
+    private func assertEveryCaseLines(_ sink: RecordingSink, rows: [Row], file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertEqual(rows.map { "\($0.name)/\($0.passed)/\($0.skipped)" },
-                       ["pass/true/false", "fail/false/false", "after a/true/true", "after b/true/true"], file: file, line: line)
+                       ["pass/true/false", "fail/false/false", "after a/true/false", "after b/true/false"], file: file, line: line)
         XCTAssertEqual(sink.records.map { "\($0["event"]!)/\($0["case"]!)/\($0["attempt"]!)/\($0["status"] ?? "-")" }, [
             "case_start/pass/1/-", "case_end/pass/1/passed",
             "case_start/fail/1/-", "case_end/fail/1/failed",
-            "case_end/after a/0/skipped",
-            "case_end/after b/0/skipped",
+            "case_start/after a/1/-", "case_end/after a/1/passed",
+            "case_start/after b/1/-", "case_end/after b/1/passed",
         ], file: file, line: line)
-        for record in sink.records where record["attempt"] as? Int == 0 {
-            XCTAssertEqual(record["durationMs"] as? Int, 0, file: file, line: line)
-        }
         XCTAssertEqual(sink.records.filter { $0["event"] as? String == "case_end" }.count, rows.count,
                        "one case_end per results row", file: file, line: line)
     }
 
-    private let stopNames = ["pass", "fail", "after a", "after b"]
+    private let afterFailureNames = ["pass", "fail", "after a", "after b"]
 
-    func testReopenStopEmitsASkippedCaseEndForEveryCaseAfterTheStop() {
+    func testReopenEmitsAPairForEveryCaseAfterAFailure() {
         let sink = RecordingSink()
         let hooks = reopenHooks(failing: ["fail"])
         let rows = ReopenedCases.run(
-            cases: reopenCases(stopNames), retries: 0, continueOnFailure: false,
+            cases: reopenCases(afterFailureNames), retries: 0,
             progress: (reporter(sink), "f.test.json", "x", { $0.name }), hooks: hooks
         )
-        assertStopLines(sink, rows: rows)
+        assertEveryCaseLines(sink, rows: rows)
     }
 
-    func testSharedStopEmitsASkippedCaseEndForEveryCaseAfterTheStop() {
+    func testSharedEmitsAPairForEveryCaseAfterAFailure() {
         let sink = RecordingSink()
         let r = reporter(sink)
         let progressFor: (String) -> ProgressRecord.Case = { .init(file: "f.test.json", test: "x", name: $0) }
         let rows = SharedCases.run(
-            cases: reopenCases(stopNames), continueOnFailure: false,
+            cases: reopenCases(afterFailureNames),
             progress: (r, "f.test.json", "x", { $0.name }),
             hooks: SharedCases.Hooks(
                 gate: { $0.skip == true ? Row(name: $0.name, passed: true, skipped: true) : nil },
                 unrunnable: { _ in nil },
                 // The runner's body emits its own pair (runTestCaseWithRetries).
                 body: { tc in r.retrying(progressFor(tc.name), retries: 0, isPass: { $0.passed }) {
-                    Row(name: tc.name, passed: tc.name != "fail") }.result },
-                stoppedAfterFailure: { Row(name: $0.name, passed: true, skipped: true) },
-                isPass: { $0.passed }
+                    Row(name: tc.name, passed: tc.name != "fail") }.result }
             )
         )
-        assertStopLines(sink, rows: rows)
+        assertEveryCaseLines(sink, rows: rows)
     }
 
     /// A case the shared loop cannot run (setup failed) is one failed
-    /// case_end of its own and does not stop the file.
+    /// case_end of its own.
     func testSharedUnrunnableCaseIsOneFailedCaseEnd() {
         let sink = RecordingSink()
         let rows = SharedCases.run(
-            cases: reopenCases(["cannot", "runs"]), continueOnFailure: false,
+            cases: reopenCases(["cannot", "runs"]),
             progress: (reporter(sink), "f.test.json", "x", { $0.name }),
             hooks: SharedCases.Hooks(
                 gate: { _ in nil },
                 unrunnable: { $0.name == "cannot" ? Row(name: $0.name, passed: false) : nil },
-                body: { Row(name: $0.name, passed: true) },
-                stoppedAfterFailure: { Row(name: $0.name, passed: true, skipped: true) },
-                isPass: { $0.passed }
+                body: { Row(name: $0.name, passed: true) }
             )
         )
         XCTAssertEqual(rows.map(\.name), ["cannot", "runs"])

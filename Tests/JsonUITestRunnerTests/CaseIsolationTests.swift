@@ -60,7 +60,6 @@ final class CaseIsolationTests: XCTestCase {
     private func run(
         _ cases: [TestCase],
         retries: Int = 0,
-        continueOnFailure: Bool = true,
         failSetupOn: Set<Int> = [],
         failBody: @escaping (TestCase, Int) -> Bool = { _, _ in false },
         failTeardownOn: Set<Int> = []
@@ -72,7 +71,6 @@ final class CaseIsolationTests: XCTestCase {
         let rows = ReopenedCases.run(
             cases: cases,
             retries: retries,
-            continueOnFailure: continueOnFailure,
             hooks: ReopenedCases.Hooks<Row>(
                 gate: { $0.skip == true ? Row(name: $0.name, passed: true, skipped: true) : nil },
                 reopen: { _ in seq.append("reopen") },
@@ -97,7 +95,6 @@ final class CaseIsolationTests: XCTestCase {
                 teardownFailed: { _, error in
                     Row(name: "teardown", passed: false, error: error.localizedDescription)
                 },
-                stoppedAfterFailure: { Row(name: $0.name, passed: true, skipped: true) },
                 isPass: { $0.passed },
                 stampAttempts: { row, attempts in
                     var stamped = row
@@ -132,13 +129,18 @@ final class CaseIsolationTests: XCTestCase {
         XCTAssertEqual(rows[1].error, "setup boom 2")
     }
 
-    func testAFailedCaseStopsTheFileWithoutContinueOnFailure() throws {
-        let (rows, seq) = run(try screenTest().cases, continueOnFailure: false, failSetupOn: [1])
-        XCTAssertEqual(seq, ["reopen", "setup", "teardown"])
-        // The cases after the stop are not reopened, but they are recorded
-        // ("three" keeps its own skip row).
+    func testAFailedCaseDoesNotStopTheFile() throws {
+        let (rows, seq) = run(try screenTest().cases, failBody: { testCase, _ in testCase.name == "one" })
+        // The cases after the failure are reopened and run, as on Android and
+        // Web ("three" keeps its own skip row).
+        XCTAssertEqual(seq, [
+            "reopen", "setup", "case:one", "teardown",
+            "reopen", "setup", "case:two", "teardown",
+            "reopen", "setup", "case:four", "teardown",
+        ])
         XCTAssertEqual(rows.map(\.name), ["one", "two", "three", "four"])
-        XCTAssertEqual(rows.map(\.skipped), [false, true, true, true])
+        XCTAssertEqual(rows.map(\.passed), [false, true, true, true])
+        XCTAssertEqual(rows.map(\.skipped), [false, false, true, false])
     }
 
     func testEachRetryAttemptReopens() throws {

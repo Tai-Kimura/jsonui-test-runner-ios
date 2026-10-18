@@ -4,7 +4,6 @@ import XCTest
 public struct TestRunnerConfig {
     public var platform: String = "ios"
     public var screenshotOnFailure: Bool = true
-    public var continueOnFailure: Bool = false
     public var defaultTimeout: TimeInterval = 5.0
     /// Extra attempts for a FAILED case (or flow body) before recording the
     /// failure — 0 (default) keeps single-run behaviour. The final result
@@ -477,7 +476,6 @@ public class JsonUITestRunner {
         let testName = screenTest.metadata.name
         caseResults = SharedCases.run(
             cases: screenTest.cases,
-            continueOnFailure: config.continueOnFailure,
             progress: (progress, progressFile, testName, { $0.name }),
             hooks: SharedCases.Hooks(
                 gate: { self.gateRow($0) },
@@ -518,9 +516,7 @@ public class JsonUITestRunner {
                             steps: testCase.steps, runDeclared: runDeclaredOrientation),
                         observed: OrientationRuntime.observe(app: self.app)
                     )
-                },
-                stoppedAfterFailure: { CaseStop.skippedRow($0) },
-                isPass: { $0.passed }
+                }
             )
         )
 
@@ -549,14 +545,12 @@ public class JsonUITestRunner {
     /// Failure semantics per case, as the shared path has them per file: a
     /// setup failure fails that case (the body never ran) and its teardown
     /// still runs; a teardown failure is an extra `teardown` row; a failed
-    /// case stops the file unless `continueOnFailure`, and each case after
-    /// the stop gets a skipped row (`CaseStop`).
+    /// case does not stop the file, the next case runs.
     private func runCasesReopened(_ screenTest: ScreenTest, plan: InitialStatePlan, screenId: String,
                                   runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
         ReopenedCases.run(
             cases: screenTest.cases,
             retries: config.caseRetries,
-            continueOnFailure: config.continueOnFailure,
             progress: (progress, progressFile, screenTest.metadata.name, { $0.name }),
             hooks: ReopenedCases.Hooks(
                 gate: { self.gateRow($0) },
@@ -605,7 +599,6 @@ public class JsonUITestRunner {
                 teardownFailed: { _, error in
                     TestCaseResult(name: "teardown", passed: false, duration: 0, error: error)
                 },
-                stoppedAfterFailure: { CaseStop.skippedRow($0) },
                 isPass: { $0.passed },
                 stampAttempts: { $0.stamping(attempts: $1) }
             )

@@ -89,7 +89,6 @@ func testWithInlineJSON() throws {
 func testWithCustomConfig() throws {
     var config = TestRunnerConfig()
     config.screenshotOnFailure = true
-    config.continueOnFailure = true  // 失敗しても続行
     config.defaultTimeout = 10.0
 
     let result = try runJsonUITest(
@@ -109,7 +108,7 @@ func testWithCustomConfig() throws {
 }
 ```
 
-`continueOnFailure` が false（既定）のとき、ファイルは最初に失敗した case で止まる。止まった後の case は実行しないが、results.json には `status: "skipped"`（`skipReason` なし）の行として必ず出る（`skip` / platform / responsive で外れる case は従来どおり自分の行）。teardown の失敗行を除けば、結果の行数はファイルの case 数と一致する。
+失敗した case があってもファイルは止まらず、後ろの case もすべて走る（Android / Web と同じ）。`skip` / platform / responsive で外れる case は従来どおり自分の skipped 行になる。teardown の失敗行を除けば、結果の行数はファイルの case 数と一致する。2.0.0 で `continueOnFailure` は設定ごと無くなった（それまでは既定 false で最初の失敗で止まり、残りを skipped 行にしていた）。設定していた利用側は、その行を消せば 2.0.0 で compile が通る。
 
 flow の結果は 1 行で、`testName` は flow の `metadata.name`、`caseName` は常に `"flow"`（Android / Web と同じ。スクリーンショット等の artifact 名の case 部分も `flow`）。
 

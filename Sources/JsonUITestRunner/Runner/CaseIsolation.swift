@@ -39,9 +39,6 @@ enum ReopenedCases {
         let setupFailed: (TestCase, Error) -> R
         /// The extra row recorded when a case's teardown threw.
         let teardownFailed: (TestCase, Error) -> R
-        /// The row for a case not run because an earlier case failed and
-        /// `continueOnFailure` is false (see `CaseStop`).
-        let stoppedAfterFailure: (TestCase) -> R
         let isPass: (R) -> Bool
         let stampAttempts: (R, Int) -> R
     }
@@ -55,23 +52,18 @@ enum ReopenedCases {
     ///   retry starts clean. Only the final attempt's teardown failure is
     ///   recorded (earlier attempts were superseded, the same rule as their
     ///   results).
-    /// - A failed case stops the file unless `continueOnFailure`, as in the
-    ///   shared path. Every case after the stop still gets a row (`CaseStop`):
-    ///   its gate row if it is gated, else a skipped row. Nothing is reopened
-    ///   for them.
-    /// - Progress (when given): a gated case, and a case after the stop, is one
-    ///   skipped case_end; every attempt — reopen and setup included, they are
-    ///   part of it — is a case_start / case_end pair; a teardown row is a
-    ///   failed pair of its own.
+    /// - A failed case does not stop the file: every case after it runs, as
+    ///   on Android and Web.
+    /// - Progress (when given): a gated case is one skipped case_end; every
+    ///   attempt — reopen and setup included, they are part of it — is a
+    ///   case_start / case_end pair; a teardown row is a failed pair of its own.
     static func run<R>(
         cases: [TestCase],
         retries: Int,
-        continueOnFailure: Bool,
         progress: (reporter: TestProgressReporter, file: String, test: String, rowName: (R) -> String)? = nil,
         hooks: Hooks<R>
     ) -> [R] {
         var rows: [R] = []
-        var stopped = false
         // The reporter and the case a line is about, when progress is wanted.
         func progressCase(_ name: String) -> (TestProgressReporter, ProgressRecord.Case)? {
             progress.map { ($0.reporter, ProgressRecord.Case(file: $0.file, test: $0.test, name: name)) }
@@ -79,11 +71,6 @@ enum ReopenedCases {
         for testCase in cases {
             if let gated = hooks.gate(testCase) {
                 rows.append(gated)
-                if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
-                continue
-            }
-            if stopped {
-                rows.append(hooks.stoppedAfterFailure(testCase))
                 if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
                 continue
             }
@@ -119,9 +106,6 @@ enum ReopenedCases {
                     reporter.caseFailedWithoutRunning(id)
                 }
             }
-            if !hooks.isPass(result) && !continueOnFailure {
-                stopped = true
-            }
         }
         return rows
     }
@@ -130,10 +114,10 @@ enum ReopenedCases {
 /// The per-case loop for `caseIsolation: shared` (the default): setup and
 /// teardown run once around it, in the runner.
 ///
-/// Pure for the same reason as `ReopenedCases`. A case whose setup failed (or
-/// that cannot run under shared) is recorded failed and does NOT stop the
-/// file — that is the behaviour this loop was extracted with. A case that ran
-/// and failed stops it unless `continueOnFailure`.
+/// Pure for the same reason as `ReopenedCases`. No case stops the file: a case
+/// whose setup failed (or that cannot run under shared) is recorded failed, a
+/// case that ran and failed is recorded failed, and the next case runs either
+/// way, as on Android and Web.
 enum SharedCases {
 
     struct Hooks<R> {
@@ -144,33 +128,23 @@ enum SharedCases {
         let unrunnable: (TestCase) -> R?
         /// Run the case (retries included) and return its final row.
         let body: (TestCase) -> R
-        /// The row for a case not run because of an earlier failure (see `CaseStop`).
-        let stoppedAfterFailure: (TestCase) -> R
-        let isPass: (R) -> Bool
     }
 
-    /// Progress (when given): a gated case, and a case after the stop, is one
-    /// skipped case_end; a case that cannot run is one failed case_end. The
-    /// body emits its own attempts (the runner's retry loop does).
+    /// Progress (when given): a gated case is one skipped case_end; a case that
+    /// cannot run is one failed case_end. The body emits its own attempts (the
+    /// runner's retry loop does).
     static func run<R>(
         cases: [TestCase],
-        continueOnFailure: Bool,
         progress: (reporter: TestProgressReporter, file: String, test: String, rowName: (R) -> String)? = nil,
         hooks: Hooks<R>
     ) -> [R] {
         var rows: [R] = []
-        var stopped = false
         func progressCase(_ name: String) -> (TestProgressReporter, ProgressRecord.Case)? {
             progress.map { ($0.reporter, ProgressRecord.Case(file: $0.file, test: $0.test, name: name)) }
         }
         for testCase in cases {
             if let gated = hooks.gate(testCase) {
                 rows.append(gated)
-                if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
-                continue
-            }
-            if stopped {
-                rows.append(hooks.stoppedAfterFailure(testCase))
                 if case let (reporter, id)? = progressCase(testCase.name) { reporter.caseSkipped(id) }
                 continue
             }
@@ -183,24 +157,7 @@ enum SharedCases {
             }
             let result = hooks.body(testCase)
             rows.append(result)
-            if !hooks.isPass(result) && !continueOnFailure {
-                stopped = true
-            }
         }
         return rows
-    }
-}
-
-/// The row for a case the run stopped before.
-///
-/// `continueOnFailure` false (the default) stops a file at its first failed
-/// case. The cases after it used to appear nowhere in results.json, so a
-/// stopped file looked shorter than it was and its row count stopped matching
-/// its case count. Each now gets a skipped row with NO skipReason: the schema's
-/// skipReason names a gate (platform / responsive), and this is not one. A
-/// case gated out (skip / platform / responsive) keeps its gate row.
-enum CaseStop {
-    static func skippedRow(_ testCase: TestCase) -> TestCaseResult {
-        TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true)
     }
 }
