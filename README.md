@@ -159,7 +159,7 @@ xcrun simctl spawn <udid> log stream --style ndjson --level info \
 `resultsPath` を設定しないときは、run（`run(screenTest:)` / `run(flowTest:)` の 1 回）ごとに新しいファイルを 1 本、既定のフォルダに書く。古い run のファイルは上書きしない。`jui viz` が過去の run として読む。
 
 ```
-<base>/ios/<app>/<UTC yyyyMMdd'T'HHmmss.SSS'Z'>-<run>.json
+<base>/ios/<app>/<UTC yyyyMMdd'T'HHmmss.SSS'Z'>-<run>-<fileKey8>.json
 ```
 
 - `<base>`: ホストの `$JSONUI_TEST_RESULTS_DIR`（絶対パスのときだけ）、無ければ `~/.local/state/jsonui-test/results`（ホームはシミュレータが渡す `SIMULATOR_HOST_HOME`）。`XDG_STATE_HOME` は見ない（シミュレータからホストの値が見えないため）。
@@ -167,7 +167,8 @@ xcrun simctl spawn <udid> log stream --style ndjson --level info \
 - `<app>`: UI テストランナーの bundle id（`<UITest の bundle id>.xctrunner`）。`[A-Za-z0-9._-]` 以外の文字は `_` に置き換える。ファイルの中の `"app"` は置き換える前の値。
 - `<run>`: その run の進捗レコードと同じ run id。ファイルには既存の内容に加えて、トップレベルの `"run"` / `"app"` と `suites[0].file`（進捗レコードの `file` と同じ文字列）が入る。
 - 書き込みは同じフォルダの `.<name>.tmp` に書いてから rename する（読み手が書きかけのファイルを見ることはない）。
-- 書いた後、そのアプリのフォルダだけを整理する: 上の名前の形に合うファイルのうち 14 日より古いものを消し、新しい順に 500 本だけ残す。形の合わないファイル、サブフォルダ、他のアプリのフォルダには触らない。
+- `<fileKey8>` は、その run のテストファイル（`suites[0].file`）の UTF-8 の SHA-256 の先頭 8 桁。名前だけで、どのテストファイルの結果かが分かる。
+- 書いた後、そのアプリのフォルダだけを整理する: **テストファイルごとの最新の 1 本は常に残す**（何日たっても、ほかのファイルを何回流しても消えない）。14 日と 500 本の規則は、それより新しい同じテストファイルの結果に置き換えられた古いもの（と、ファイル鍵の無い前の形の名前 `<時刻>-<run>.json`）にだけ当てる。形の合わないファイル、サブフォルダ、他のアプリのフォルダには触らない。規則と検体は jsonui-test-runner の `specs/vectors/results-prune.json`（3 つのドライバーと `jui viz` が写しを持つ）。
 - 実機は対象外: シミュレータでないとき（または `SIMULATOR_HOST_HOME` が無いとき）は何も書かない。
 - 書き込みの失敗はテストの結果を変えない。失敗の種類ごとにプロセスで 1 回だけ注意を出す。
 

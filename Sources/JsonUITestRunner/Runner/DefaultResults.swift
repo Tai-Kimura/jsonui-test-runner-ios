@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The file operations the default results write uses. A seam so a plain
@@ -89,9 +90,10 @@ enum DefaultResults {
     static let maxFiles = 500
 
     /// The only names pruning may delete. The dot-prefixed temporary file a
-    /// write goes through does not match.
+    /// write goes through does not match. Group 1 is the file key; a name of
+    /// the earlier shape (2.1.0, no key) still matches, without it.
     static let namePattern =
-        #"^\d{8}T\d{6}\.\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$"#
+        #"^\d{8}T\d{6}\.\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-([0-9a-f]{8}))?\.json$"#
     private static let nameRegex = try! NSRegularExpression(pattern: namePattern)
 
     /// Everything the write reads from outside, so a test never touches the
@@ -156,7 +158,7 @@ enum DefaultResults {
         }
         let folder = self.folder(base: base, app: context.app)
         let date = context.now()
-        let name = fileName(date: date, run: run)
+        let name = fileName(date: date, run: run, fileKey8: fileKey([file]))
         let target = folder.appendingPathComponent(name)
         let temporary = folder.appendingPathComponent(".\(name).tmp")
         let files = context.files
@@ -245,12 +247,29 @@ enum DefaultResults {
         return formatter
     }
 
-    static func fileName(date: Date, run: String) -> String {
-        "\(formatter().string(from: date))-\(run).json"
+    /// `<UTC yyyyMMdd'T'HHmmss.SSS'Z'>-<run>-<fileKey8>.json` — name order is time order.
+    static func fileName(date: Date, run: String, fileKey8: String) -> String {
+        "\(formatter().string(from: date))-\(run)-\(fileKey8).json"
+    }
+
+    /// The run's file key in a name: the first 8 hex digits of SHA-256 over
+    /// the UTF-8 of its test files (distinct, sorted, joined with a newline),
+    /// so pruning tells one test file's results from another's by name alone.
+    /// jsonui-test-runner specs/vectors/results-prune.json.
+    static func fileKey(_ files: [String]) -> String {
+        let key = Array(Set(files)).sorted().joined(separator: "\n")
+        return SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined().prefix(8).description
     }
 
     static func isResultsFileName(_ name: String) -> Bool {
         nameRegex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
+    }
+
+    /// The file key a matching name carries; "" for a name of the earlier shape; nil when it does not match.
+    static func fileKey(ofName name: String) -> String? {
+        guard let match = nameRegex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) else { return nil }
+        guard let range = Range(match.range(at: 1), in: name) else { return "" }
+        return String(name[range])
     }
 
     /// The time a results file name carries (its first 19 characters).
@@ -261,9 +280,32 @@ enum DefaultResults {
 
     // MARK: - Pruning
 
-    /// In this one folder only, among names matching `namePattern`: delete
-    /// those older than 14 days, then keep the newest 500 by name (name
-    /// order is time order). Nothing else is touched; nothing recurses.
+    /// The names pruning deletes from one folder, in name order. The newest
+    /// name of each file key is always kept: a test file not rerun keeps its
+    /// latest result however old, and however many other files ran since.
+    /// The rest — older names of the same key, and names of the earlier
+    /// shape — go when older than `maxAgeDays`, then oldest first until at
+    /// most `maxFiles` names remain (a folder of more test files than that
+    /// keeps them all). Names not matching `namePattern` are never chosen.
+    static func namesToPrune(_ names: [String], now: Date, maxFiles: Int = maxFiles, maxAgeDays: Int = maxAgeDays) -> [String] {
+        let matching = Array(Set(names.filter(isResultsFileName))).sorted()
+        var latest: [String: String] = [:]
+        for name in matching {
+            if let key = fileKey(ofName: name), !key.isEmpty { latest[key] = name }   // sorted: the last is the newest
+        }
+        let kept = Set(latest.values)
+        let cutoff = now.addingTimeInterval(-Double(maxAgeDays) * 86_400)
+        let replaced = matching.filter { !kept.contains($0) }
+        var doomed = Set(replaced.filter { name in timestamp(ofName: name).map { $0 < cutoff } ?? false })
+        var remaining = matching.count - doomed.count
+        for name in replaced where remaining > maxFiles {
+            if doomed.insert(name).inserted { remaining -= 1 }
+        }
+        return matching.filter { doomed.contains($0) }
+    }
+
+    /// In this one folder only, delete `namesToPrune`. Nothing else is
+    /// touched; nothing recurses.
     static func prune(folder: URL, now: Date, files: ResultsFilePort, notices: NoticeOnce) {
         let names: [String]
         do {
@@ -272,21 +314,7 @@ enum DefaultResults {
             notices.notice(kind: "prune", "JsonUITestRunner: old results not pruned in \(folder.path) (\(error)).")
             return
         }
-        let cutoff = now.addingTimeInterval(-Double(maxAgeDays) * 86_400)
-        var kept: [String] = []
-        var doomed: [String] = []
-        for name in names where isResultsFileName(name) {
-            if let stamp = timestamp(ofName: name), stamp < cutoff {
-                doomed.append(name)
-            } else {
-                kept.append(name)
-            }
-        }
-        kept.sort()
-        if kept.count > maxFiles {
-            doomed.append(contentsOf: kept.prefix(kept.count - maxFiles))
-        }
-        for name in doomed {
+        for name in namesToPrune(names, now: now) {
             do {
                 try files.remove(folder.appendingPathComponent(name))
             } catch {

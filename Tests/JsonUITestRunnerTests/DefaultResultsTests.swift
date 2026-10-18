@@ -79,7 +79,8 @@ final class DefaultResultsTests: XCTestCase {
                                 file: "screens/login.test.json", context: context())
 
         let files = names(in: defaultFolder)
-        XCTAssertEqual(files, ["20261018T181700.123Z-\(run).json"], "one file, no leftover .tmp")
+        XCTAssertEqual(files, ["20261018T181700.123Z-\(run)-\(DefaultResults.fileKey(["screens/login.test.json"])).json"],
+                       "one file named by its run and its test file, no leftover .tmp")
         let only = try XCTUnwrap(files.first)
         let payload = try json(defaultFolder.appendingPathComponent(only))
         XCTAssertEqual(payload["run"] as? String, run)
@@ -182,7 +183,9 @@ final class DefaultResultsTests: XCTestCase {
 
     // MARK: 3. pruning
 
+    /// One test file rerun: every file here is a result of "inline", so the newest 500 by name stay.
     func testPruningKeepsTheNewest500AndDropsOnlyOldMatchingFiles() throws {
+        let inline = DefaultResults.fileKey(["inline"])
         let fm = FileManager.default
         try fm.createDirectory(at: defaultFolder, withIntermediateDirectories: true)
         let sibling = defaultFolder.deletingLastPathComponent().appendingPathComponent("com.other.xctrunner")
@@ -194,11 +197,11 @@ final class DefaultResultsTests: XCTestCase {
         // 501 recent files, one second apart before now.
         var recent: [String] = []
         for i in 1...501 {
-            let name = DefaultResults.fileName(date: fixedNow.addingTimeInterval(-Double(i)), run: newRun())
+            let name = DefaultResults.fileName(date: fixedNow.addingTimeInterval(-Double(i)), run: newRun(), fileKey8: inline)
             recent.append(name)
             touch(defaultFolder, name)
         }
-        let old = DefaultResults.fileName(date: fixedNow.addingTimeInterval(-15 * 86_400), run: newRun())
+        let old = DefaultResults.fileName(date: fixedNow.addingTimeInterval(-15 * 86_400), run: newRun(), fileKey8: inline)
         touch(defaultFolder, old)
         // Non-matching names that would sort oldest / look old if the
         // pattern were ignored.
@@ -209,7 +212,7 @@ final class DefaultResultsTests: XCTestCase {
         for name in strangers { touch(defaultFolder, name) }
         try fm.createDirectory(at: defaultFolder.appendingPathComponent("20000101T000000.000Z-\(newRun()).json"),
                                withIntermediateDirectories: false)
-        let siblingOld = DefaultResults.fileName(date: fixedNow.addingTimeInterval(-30 * 86_400), run: newRun())
+        let siblingOld = DefaultResults.fileName(date: fixedNow.addingTimeInterval(-30 * 86_400), run: newRun(), fileKey8: inline)
         touch(sibling, siblingOld)
 
         let written = try XCTUnwrap(DefaultResults.writeDefault(
@@ -250,9 +253,13 @@ final class DefaultResultsTests: XCTestCase {
 
     func testNameFormatRoundTripsThroughThePattern() {
         let run = "3f2a0b1c-0d1e-4f20-8a3b-4c5d6e7f8091"
-        let name = DefaultResults.fileName(date: fixedNow, run: run)
-        XCTAssertEqual(name, "20261018T181700.123Z-\(run).json")
+        let name = DefaultResults.fileName(date: fixedNow, run: run, fileKey8: "abcd1234")
+        XCTAssertEqual(name, "20261018T181700.123Z-\(run)-abcd1234.json")
         XCTAssertTrue(DefaultResults.isResultsFileName(name))
+        XCTAssertEqual(DefaultResults.fileKey(ofName: name), "abcd1234")
+        // the earlier shape (2.1.0) still matches, without a key
+        XCTAssertEqual(DefaultResults.fileKey(ofName: "20261018T181700.123Z-\(run).json"), "")
+        XCTAssertNil(DefaultResults.fileKey(ofName: "notes.json"))
         XCTAssertEqual(DefaultResults.timestamp(ofName: name)!.timeIntervalSince1970,
                        fixedNow.timeIntervalSince1970, accuracy: 0.0005)
 
