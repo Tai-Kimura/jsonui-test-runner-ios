@@ -141,6 +141,8 @@ runner は `JSONUI_TEST_CLEAR_STATE` / `JSONUI_TEST_ARGS` / `JSONUI_TEST_PERMISS
 2. UITestターゲットの "Build Phases" > "Copy Bundle Resources" に追加
 3. テストコードで `Bundle(for: type(of: self))` を使って読み込み
 
+`TestLoader.loadAll(from:)`（`loadAllFromBundle` も同じ）は対象の `*.test.*.json` を全部試し、読めないファイルが 1 本でもあれば、失敗したパスと理由を全部並べたエラー（`TestLoaderError.unreadableFiles`）を 1 回だけ throw する。警告を出して飛ばすことはしない。
+
 ## 要素の特定
 
 JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングされます:

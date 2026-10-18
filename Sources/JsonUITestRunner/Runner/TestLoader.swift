@@ -8,6 +8,10 @@ public enum TestLoaderError: Error, LocalizedError {
     case bundleResourceNotFound(name: String)
     case caseNotFound(caseName: String, file: String)
     case notAScreenTest(file: String)
+    /// `loadAll` tried every matching file and these could not be loaded:
+    /// each failed path with the reason it failed. Thrown once, after every
+    /// file was tried, so one run names all of them.
+    case unreadableFiles([(path: String, reason: String)])
 
     public var errorDescription: String? {
         switch self {
@@ -23,6 +27,9 @@ public enum TestLoaderError: Error, LocalizedError {
             return "Test case '\(caseName)' not found in file: \(file)"
         case .notAScreenTest(let file):
             return "File reference must point to a screen test: \(file)"
+        case .unreadableFiles(let failures):
+            let lines = failures.map { "  \($0.path): \($0.reason)" }
+            return "\(failures.count) test file(s) could not be loaded:\n" + lines.joined(separator: "\n")
         }
     }
 }
@@ -115,9 +122,16 @@ public class TestLoader {
         return try loadAll(from: url)
     }
 
-    /// Load all tests from a directory URL
+    /// Load all tests from a directory URL.
+    ///
+    /// Every matching `*.test.*.json` file is tried. If any of them cannot be
+    /// loaded, ONE `TestLoaderError.unreadableFiles` is thrown after the
+    /// walk, naming every failed path and its reason. It used to print a
+    /// warning and skip the file, so a broken test file vanished from the run
+    /// and the run still went green.
     public func loadAll(from directory: URL) throws -> [LoadedTest] {
         var tests: [LoadedTest] = []
+        var failures: [(path: String, reason: String)] = []
 
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: nil) else {
@@ -130,11 +144,14 @@ public class TestLoader {
                     let test = try load(from: fileURL)
                     tests.append(test)
                 } catch {
-                    print("Warning: Failed to load \(fileURL.path): \(error.localizedDescription)")
+                    failures.append((path: fileURL.path, reason: error.localizedDescription))
                 }
             }
         }
 
+        if !failures.isEmpty {
+            throw TestLoaderError.unreadableFiles(failures)
+        }
         return tests
     }
 
