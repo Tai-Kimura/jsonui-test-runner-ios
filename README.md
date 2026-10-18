@@ -109,6 +109,8 @@ func testWithCustomConfig() throws {
 }
 ```
 
+flow の結果は 1 行で、`testName` は flow の `metadata.name`、`caseName` は常に `"flow"`（Android / Web と同じ。スクリーンショット等の artifact 名の case 部分も `flow`）。
+
 ### ViewModel状態の検証（`state`）と initialState
 
 1.15.0 から、ハーネスは何も渡さなくてよい。SwiftJsonUI ≥ 10.30.0 と同じ列車の jsonui-cli で生成した画面は、

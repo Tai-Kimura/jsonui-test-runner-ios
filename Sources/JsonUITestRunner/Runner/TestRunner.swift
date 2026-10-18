@@ -666,9 +666,7 @@ public class JsonUITestRunner {
         if let platform = flowTest.platform, !platform.includes(config.platform) {
             let result = TestRunResult(
                 testName: flowTest.metadata.name,
-                caseResults: [
-                    TestCaseResult(name: flowTest.metadata.name, passed: true, duration: 0, skipped: true, skipReason: .platform)
-                ],
+                caseResults: [FlowRows.platformSkipped()],
                 totalDuration: 0
             )
             writeResultsIfNeeded(result)
@@ -685,7 +683,7 @@ public class JsonUITestRunner {
             } catch {
                 let result = TestRunResult(
                     testName: flowTest.metadata.name,
-                    caseResults: [TestCaseResult(name: flowTest.metadata.name, passed: false, duration: 0, error: error)],
+                    caseResults: [FlowRows.notStarted(error: error)],
                     totalDuration: Date().timeIntervalSince(startTime)
                 )
                 writeResultsIfNeeded(result)
@@ -738,9 +736,10 @@ public class JsonUITestRunner {
         let startTime = Date()
         var screenshots: [XCTAttachment] = []
         var warnings: [String] = []
-        // A flow acts as a single case for artifact identity purposes.
+        // A flow acts as a single case named "flow" for artifact identity
+        // purposes — the same name its results row carries.
         currentTestName = flowTest.metadata.name
-        currentCaseName = flowTest.metadata.name
+        currentCaseName = FlowRows.caseName
         var flowError: Error? = nil
 
         // The flow body (setup + steps) is the retry unit: flows begin with
@@ -806,11 +805,9 @@ public class JsonUITestRunner {
         } while flowError != nil && flowAttempts < maxAttempts
 
         var results: [TestCaseResult] = [
-            TestCaseResult(
-                name: flowTest.metadata.name,
-                passed: flowError == nil,
-                duration: Date().timeIntervalSince(startTime),
+            FlowRows.body(
                 error: flowError,
+                duration: Date().timeIntervalSince(startTime),
                 screenshots: screenshots,
                 warnings: warnings,
                 attempts: flowAttempts
