@@ -33,7 +33,9 @@ public struct TestRunnerConfig {
     public var baselineDir: URL? = nil
     /// When true, screenshot baselines are always overwritten and the assertion passes
     public var updateBaselines: Bool = false
-    /// When set, results are written to this path as standardized results JSON
+    /// When set, results are written to this path as standardized results JSON.
+    /// When nil, each run is written to its own file in the default folder
+    /// (see DefaultResults; simulator only).
     public var resultsPath: URL? = nil
     /// Mock server base URL (e.g. http://localhost:8790). Required to use `mocks` / `setMocks`.
     public var mockServerURL: URL? = nil
@@ -1218,9 +1220,12 @@ public class JsonUITestRunner {
 
     // MARK: - Results Output
 
+    /// `resultsPath` set: written there, as before. Unset: written to the
+    /// default per-app folder (DefaultResults), named by this run's progress
+    /// run id. Never changes the result.
     private func writeResultsIfNeeded(_ result: TestRunResult) {
-        guard let path = config.resultsPath else { return }
-        try? ResultsWriter.write([result], to: path, platform: config.platform)
+        DefaultResults.writeRun(result, resultsPath: config.resultsPath, platform: config.platform,
+                                run: progress.run, file: progressFile)
     }
 }
 

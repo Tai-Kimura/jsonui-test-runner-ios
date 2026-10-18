@@ -16,6 +16,12 @@ public enum ResultsWriter {
 
     /// Build the results.schema.json payload from run results.
     public static func resultsJSON(_ runs: [TestRunResult], platform: String) -> [String: Any] {
+        resultsJSON(runs, platform: platform, generatedAt: Date())
+    }
+
+    /// The same payload with the time given, so the default write
+    /// (DefaultResults) can name its file by the generatedAt it writes.
+    static func resultsJSON(_ runs: [TestRunResult], platform: String, generatedAt: Date) -> [String: Any] {
         let iso = ISO8601DateFormatter()
         let suites: [[String: Any]] = runs.map { run in
             let results: [[String: Any]] = run.caseResults.map { caseResult in
@@ -87,7 +93,7 @@ public enum ResultsWriter {
             "format": "jsonui-test-results",
             "version": 1,
             "platform": platform,
-            "generatedAt": iso.string(from: Date()),
+            "generatedAt": iso.string(from: generatedAt),
             "suites": suites
         ]
     }

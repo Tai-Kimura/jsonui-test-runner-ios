@@ -152,6 +152,25 @@ xcrun simctl spawn <udid> log stream --style ndjson --level info \
 - case は試行ごとに `case_start` / `case_end`（`attempt` 1, 2, …）。実行されなかった case は `attempt: 0` の `case_end`（skipped）1 行だけ。setup や起動の失敗の行、`teardown` の行も 1 組出る。
 - `test` / `case` は results.json の testName / caseName と同じ。`file` は `TestLoader` が読んだファイルの、読んだ root（bundle の resources、`loadAll` のディレクトリ）からの相対パス。コードで組んだテストや inline JSON は `"inline"`。
 
+### 結果ファイル（`resultsPath` と既定の置き場所）
+
+`config.resultsPath` を設定すると、従来どおりそのパスに results JSON（jsonui-test-runner `schemas/results.schema.json`）を書く。run のたびに同じファイルを上書きし、キーも従来と同じ（`run` / `app` / `file` は足さない）。このとき既定の置き場所には何も書かない。
+
+`resultsPath` を設定しないときは、run（`run(screenTest:)` / `run(flowTest:)` の 1 回）ごとに新しいファイルを 1 本、既定のフォルダに書く。古い run のファイルは上書きしない。`jui viz` が過去の run として読む。
+
+```
+<base>/ios/<app>/<UTC yyyyMMdd'T'HHmmss.SSS'Z'>-<run>.json
+```
+
+- `<base>`: ホストの `$JSONUI_TEST_RESULTS_DIR`（絶対パスのときだけ）、無ければ `~/.local/state/jsonui-test/results`（ホームはシミュレータが渡す `SIMULATOR_HOST_HOME`）。`XDG_STATE_HOME` は見ない（シミュレータからホストの値が見えないため）。
+- `JSONUI_TEST_RESULTS_DIR` はホスト側の変数。iOS ではテストプロセスに届かないので、xcodebuild に `TEST_RUNNER_` を付けて渡す: `TEST_RUNNER_JSONUI_TEST_RESULTS_DIR=/abs/path xcodebuild test …`。Android の端末側には効かない（端末内の固定の場所に書く）。
+- `<app>`: UI テストランナーの bundle id（`<UITest の bundle id>.xctrunner`）。`[A-Za-z0-9._-]` 以外の文字は `_` に置き換える。ファイルの中の `"app"` は置き換える前の値。
+- `<run>`: その run の進捗レコードと同じ run id。ファイルには既存の内容に加えて、トップレベルの `"run"` / `"app"` と `suites[0].file`（進捗レコードの `file` と同じ文字列）が入る。
+- 書き込みは同じフォルダの `.<name>.tmp` に書いてから rename する（読み手が書きかけのファイルを見ることはない）。
+- 書いた後、そのアプリのフォルダだけを整理する: 上の名前の形に合うファイルのうち 14 日より古いものを消し、新しい順に 500 本だけ残す。形の合わないファイル、サブフォルダ、他のアプリのフォルダには触らない。
+- 実機は対象外: シミュレータでないとき（または `SIMULATOR_HOST_HOME` が無いとき）は何も書かない。
+- 書き込みの失敗はテストの結果を変えない。失敗の種類ごとにプロセスで 1 回だけ注意を出す。
+
 ## テストJSONファイルの配置
 
 1. テストJSONファイルを作成 (例: `login.test.json`)
