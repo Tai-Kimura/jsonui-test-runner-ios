@@ -449,55 +449,53 @@ public class JsonUITestRunner {
             }
         }
 
-        for testCase in screenTest.cases {
-            if let gated = gateRow(testCase) {
-                caseResults.append(gated)
-                continue
-            }
-
-            if let setupError = setupError {
-                caseResults.append(TestCaseResult(
-                    name: testCase.name,
-                    passed: false,
-                    duration: 0,
-                    error: setupError is TestRunnerError
-                        ? setupError
-                        : TestRunnerError.setupFailed(reason: setupError.localizedDescription)
-                ))
-                continue
-            }
-
-            // A case-level initialState under shared has no launch to ride
-            // (spec §10.2): fail this case, not the file.
-            if needsReopen.contains(testCase.name) {
-                caseResults.append(TestCaseResult(
-                    name: testCase.name,
-                    passed: false,
-                    duration: 0,
-                    error: TestRunnerError.setupFailed(reason:
-                        "case '\(testCase.name)' has its own initialState, which needs caseIsolation \"reopen\": "
-                        + "under \"shared\" the screen is opened once, before the first case "
-                        + "(\(InitialStatePlan.caseNeedsReopen))")
-                ))
-                continue
-            }
-
-            let result = runTestCaseWithRetries(testCase)
-            // Stamped AFTER the case, never before: `observed` has to be the
-            // orientation the case actually finished in, and `declared` has to
-            // include a `setOrientation` step the case performed. Only on rows
-            // that ran — a skipped case has no orientation to report, the same
-            // reason `attempts` is absent there.
-            caseResults.append(result.stamping(
-                declared: OrientationRuntime.declaredForCase(
-                    steps: testCase.steps, runDeclared: runDeclaredOrientation),
-                observed: OrientationRuntime.observe(app: app)
-            ))
-
-            if !result.passed && !config.continueOnFailure {
-                break
-            }
-        }
+        caseResults = SharedCases.run(
+            cases: screenTest.cases,
+            continueOnFailure: config.continueOnFailure,
+            hooks: SharedCases.Hooks(
+                gate: { self.gateRow($0) },
+                unrunnable: { testCase in
+                    if let setupError = setupError {
+                        return TestCaseResult(
+                            name: testCase.name,
+                            passed: false,
+                            duration: 0,
+                            error: setupError is TestRunnerError
+                                ? setupError
+                                : TestRunnerError.setupFailed(reason: setupError.localizedDescription)
+                        )
+                    }
+                    // A case-level initialState under shared has no launch to ride
+                    // (spec §10.2): fail this case, not the file.
+                    if needsReopen.contains(testCase.name) {
+                        return TestCaseResult(
+                            name: testCase.name,
+                            passed: false,
+                            duration: 0,
+                            error: TestRunnerError.setupFailed(reason:
+                                "case '\(testCase.name)' has its own initialState, which needs caseIsolation \"reopen\": "
+                                + "under \"shared\" the screen is opened once, before the first case "
+                                + "(\(InitialStatePlan.caseNeedsReopen))")
+                        )
+                    }
+                    return nil
+                },
+                body: { testCase in
+                    // Stamped AFTER the case, never before: `observed` has to be the
+                    // orientation the case actually finished in, and `declared` has to
+                    // include a `setOrientation` step the case performed. Only on rows
+                    // that ran — a skipped case has no orientation to report, the same
+                    // reason `attempts` is absent there.
+                    self.runTestCaseWithRetries(testCase).stamping(
+                        declared: OrientationRuntime.declaredForCase(
+                            steps: testCase.steps, runDeclared: runDeclaredOrientation),
+                        observed: OrientationRuntime.observe(app: self.app)
+                    )
+                },
+                stoppedAfterFailure: { CaseStop.skippedRow($0) },
+                isPass: { $0.passed }
+            )
+        )
 
         // Teardown (guaranteed). A teardown failure is recorded as an extra failed result.
         if let teardownSteps = screenTest.teardown {
@@ -523,7 +521,8 @@ public class JsonUITestRunner {
     /// Failure semantics per case, as the shared path has them per file: a
     /// setup failure fails that case (the body never ran) and its teardown
     /// still runs; a teardown failure is an extra `teardown` row; a failed
-    /// case stops the file unless `continueOnFailure`.
+    /// case stops the file unless `continueOnFailure`, and each case after
+    /// the stop gets a skipped row (`CaseStop`).
     private func runCasesReopened(_ screenTest: ScreenTest, plan: InitialStatePlan, screenId: String,
                                   runDeclaredOrientation: Orientation?) -> [TestCaseResult] {
         ReopenedCases.run(
@@ -577,6 +576,7 @@ public class JsonUITestRunner {
                 teardownFailed: { _, error in
                     TestCaseResult(name: "teardown", passed: false, duration: 0, error: error)
                 },
+                stoppedAfterFailure: { CaseStop.skippedRow($0) },
                 isPass: { $0.passed },
                 stampAttempts: { $0.stamping(attempts: $1) }
             )

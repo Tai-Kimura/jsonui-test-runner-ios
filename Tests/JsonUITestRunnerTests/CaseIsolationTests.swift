@@ -97,6 +97,7 @@ final class CaseIsolationTests: XCTestCase {
                 teardownFailed: { _, error in
                     Row(name: "teardown", passed: false, error: error.localizedDescription)
                 },
+                stoppedAfterFailure: { Row(name: $0.name, passed: true, skipped: true) },
                 isPass: { $0.passed },
                 stampAttempts: { row, attempts in
                     var stamped = row
@@ -134,7 +135,10 @@ final class CaseIsolationTests: XCTestCase {
     func testAFailedCaseStopsTheFileWithoutContinueOnFailure() throws {
         let (rows, seq) = run(try screenTest().cases, continueOnFailure: false, failSetupOn: [1])
         XCTAssertEqual(seq, ["reopen", "setup", "teardown"])
-        XCTAssertEqual(rows.map(\.name), ["one"])
+        // The cases after the stop are not reopened, but they are recorded
+        // ("three" keeps its own skip row).
+        XCTAssertEqual(rows.map(\.name), ["one", "two", "three", "four"])
+        XCTAssertEqual(rows.map(\.skipped), [false, true, true, true])
     }
 
     func testEachRetryAttemptReopens() throws {

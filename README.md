@@ -109,6 +109,8 @@ func testWithCustomConfig() throws {
 }
 ```
 
+`continueOnFailure` が false（既定）のとき、ファイルは最初に失敗した case で止まる。止まった後の case は実行しないが、results.json には `status: "skipped"`（`skipReason` なし）の行として必ず出る（`skip` / platform / responsive で外れる case は従来どおり自分の行）。teardown の失敗行を除けば、結果の行数はファイルの case 数と一致する。
+
 flow の結果は 1 行で、`testName` は flow の `metadata.name`、`caseName` は常に `"flow"`（Android / Web と同じ。スクリーンショット等の artifact 名の case 部分も `flow`）。
 
 ### ViewModel状態の検証（`state`）と initialState

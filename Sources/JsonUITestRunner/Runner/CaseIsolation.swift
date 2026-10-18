@@ -39,6 +39,9 @@ enum ReopenedCases {
         let setupFailed: (TestCase, Error) -> R
         /// The extra row recorded when a case's teardown threw.
         let teardownFailed: (TestCase, Error) -> R
+        /// The row for a case not run because an earlier case failed and
+        /// `continueOnFailure` is false (see `CaseStop`).
+        let stoppedAfterFailure: (TestCase) -> R
         let isPass: (R) -> Bool
         let stampAttempts: (R, Int) -> R
     }
@@ -53,7 +56,9 @@ enum ReopenedCases {
     ///   recorded (earlier attempts were superseded, the same rule as their
     ///   results).
     /// - A failed case stops the file unless `continueOnFailure`, as in the
-    ///   shared path.
+    ///   shared path. Every case after the stop still gets a row (`CaseStop`):
+    ///   its gate row if it is gated, else a skipped row. Nothing is reopened
+    ///   for them.
     static func run<R>(
         cases: [TestCase],
         retries: Int,
@@ -61,9 +66,14 @@ enum ReopenedCases {
         hooks: Hooks<R>
     ) -> [R] {
         var rows: [R] = []
+        var stopped = false
         for testCase in cases {
             if let gated = hooks.gate(testCase) {
                 rows.append(gated)
+                continue
+            }
+            if stopped {
+                rows.append(hooks.stoppedAfterFailure(testCase))
                 continue
             }
             var teardownError: Error?
@@ -89,9 +99,71 @@ enum ReopenedCases {
                 rows.append(hooks.teardownFailed(testCase, teardownError))
             }
             if !hooks.isPass(result) && !continueOnFailure {
-                break
+                stopped = true
             }
         }
         return rows
+    }
+}
+
+/// The per-case loop for `caseIsolation: shared` (the default): setup and
+/// teardown run once around it, in the runner.
+///
+/// Pure for the same reason as `ReopenedCases`. A case whose setup failed (or
+/// that cannot run under shared) is recorded failed and does NOT stop the
+/// file — that is the behaviour this loop was extracted with. A case that ran
+/// and failed stops it unless `continueOnFailure`.
+enum SharedCases {
+
+    struct Hooks<R> {
+        /// The skipped row for a case gated out (skip / platform / responsive), or nil.
+        let gate: (TestCase) -> R?
+        /// The failed row for a case that cannot run (setup failed, or a case
+        /// initialState under shared), or nil when it can.
+        let unrunnable: (TestCase) -> R?
+        /// Run the case (retries included) and return its final row.
+        let body: (TestCase) -> R
+        /// The row for a case not run because of an earlier failure (see `CaseStop`).
+        let stoppedAfterFailure: (TestCase) -> R
+        let isPass: (R) -> Bool
+    }
+
+    static func run<R>(cases: [TestCase], continueOnFailure: Bool, hooks: Hooks<R>) -> [R] {
+        var rows: [R] = []
+        var stopped = false
+        for testCase in cases {
+            if let gated = hooks.gate(testCase) {
+                rows.append(gated)
+                continue
+            }
+            if stopped {
+                rows.append(hooks.stoppedAfterFailure(testCase))
+                continue
+            }
+            if let failed = hooks.unrunnable(testCase) {
+                rows.append(failed)
+                continue
+            }
+            let result = hooks.body(testCase)
+            rows.append(result)
+            if !hooks.isPass(result) && !continueOnFailure {
+                stopped = true
+            }
+        }
+        return rows
+    }
+}
+
+/// The row for a case the run stopped before.
+///
+/// `continueOnFailure` false (the default) stops a file at its first failed
+/// case. The cases after it used to appear nowhere in results.json, so a
+/// stopped file looked shorter than it was and its row count stopped matching
+/// its case count. Each now gets a skipped row with NO skipReason: the schema's
+/// skipReason names a gate (platform / responsive), and this is not one. A
+/// case gated out (skip / platform / responsive) keeps its gate row.
+enum CaseStop {
+    static func skippedRow(_ testCase: TestCase) -> TestCaseResult {
+        TestCaseResult(name: testCase.name, passed: true, duration: 0, skipped: true)
     }
 }
