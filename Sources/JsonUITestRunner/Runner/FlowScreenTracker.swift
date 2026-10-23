@@ -82,3 +82,58 @@ struct FlowScreenTracker {
         }
     }
 }
+
+/// The runner's FlowScreenTracker. A step's screen check runs on a copy,
+/// written back afterwards, so no access to the runner's state is open while
+/// `verify` and `waitForReceipt` do their XCUITest work.
+///
+/// XCUITest stops a test by unwinding through that work — a read it cannot
+/// answer is recorded as a failure and the test is interrupted, whatever
+/// continueAfterFailure says — and the unwinding runs no Swift cleanup. A
+/// mutating call on a stored property of the runner keeps a Swift
+/// exclusivity access open for the whole call, the closures included; left
+/// open, it stays registered on the main thread, pointing into a stack frame
+/// that no longer exists, and the next access the next test makes walks into
+/// it: SIGSEGV in swift_beginAccess under verifyScreenTransitionIfNeeded, at
+/// the first step of the test after the one that was stopped (a consumer's
+/// tablet run, 2026-10-20 and 2026-10-23; jsonui-cli ticket
+/// 2026-10-23-test-ios-runner-segv-in-verify-screen-transition). The copy is
+/// a local the access checker does not track, and the runner holds this
+/// object in a `let`, which it does not track either.
+///
+/// A step stopped that way leaves the tracker where the step began; the next
+/// flow or attempt starts from "unknown" anyway (startFlow, startAttempt).
+final class FlowScreens {
+    private var tracker = FlowScreenTracker()
+
+    var stateScreen: String? { tracker.stateScreen }
+    var unreachedWarnings: [String] { tracker.unreachedWarnings }
+
+    func startFlow(pendingReceipts: [String: String]) {
+        tracker.startFlow(pendingReceipts: pendingReceipts)
+    }
+
+    func startAttempt() {
+        tracker.startAttempt()
+    }
+
+    func enterStep(
+        screen: String?,
+        verifyScreens: Bool,
+        verify: (String) throws -> Void,
+        waitForReceipt: (_ screen: String, _ launchId: String) throws -> Void
+    ) throws {
+        var copy = tracker
+        defer { tracker = copy }
+        try copy.enterStep(
+            screen: screen, verifyScreens: verifyScreens, verify: verify, waitForReceipt: waitForReceipt)
+    }
+
+    func enterFileReference(screenOfFile: String?) {
+        tracker.enterFileReference(screenOfFile: screenOfFile)
+    }
+
+    func leaveFileReference() {
+        tracker.leaveFileReference()
+    }
+}

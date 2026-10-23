@@ -987,8 +987,9 @@ public class JsonUITestRunner {
     }
 
     /// The flow's screen, `state`'s screen and the receipts still owed
-    /// (FlowScreenTracker).
-    private var flowScreens = FlowScreenTracker()
+    /// (FlowScreenTracker). A `let` of a class, so that a step's screen check
+    /// runs with no access to the runner's state open (FlowScreens).
+    private let flowScreens = FlowScreens()
 
     /// Implicit screen verification (canon: implicitVerification) and the
     /// receipt of a screen reached for the first time. Runs BEFORE the step,
