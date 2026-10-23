@@ -226,6 +226,16 @@ JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングさ�
 | `count` | 要素数検証 |
 | `state` | ViewModel状態検証 |
 
+### `screen` の残り（2.1.2）
+
+`screen` の検査は、他の画面の印が上にあるかを `isHittable` で聞く。ビューごと消える瞬間の印に当たると、XCUITest は答えずに「Failed to determine hittability … Activation point invalid and no suggested hit points based on element frame」をテストの失敗として記録し、テストを止める（continueAfterFailure に関係なく）。
+
+- 率: 100 ms ごとに画面が消え続ける、きつい形で、`hittableScreens` が 5 回中 2 回、`assert: screen` が 5 回中 1 回（SwiftJsonUI ConformanceHost の ScreenMarkerShrinkProbeUITests、Xcode 27.2、iOS 26.3）。
+- 公開 API に、失敗を記録せずに hittability を聞く方法が無い。`XCTExpectFailure` の中でもテストは止まる（測った）。そのため 2.1.2 では取り除いていない。2.1.1 にも同じ問いがあった。
+- 2.1.2 では、こうして止められたテストが、次のテストを道連れにしない。2.1.1 では、次のテストの最初の画面検査で、ランナーが SIGSEGV（`swift_beginAccess`）で落ちることがあった。
+
+数えてから index で引いた印が消えていた場合（「No matches found for Element at index N」）は、2.1.2 で直っている。
+
 ## API モック
 
 `jsonui-test mock serve` のモックサーバーに向けて、空状態・エラー状態を決定的にテストできます。
