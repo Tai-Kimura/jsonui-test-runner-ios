@@ -788,11 +788,15 @@ public class XCUITestActionExecutor: ActionExecutor {
         let total = all.count
         guard total > 0, total <= ScrollDiagnosis.atPointScanCap else { return nil }
 
+        // One snapshot per element (snapshotsBoundByIndex): an element that
+        // leaves during the scan is not read, where a read of it by index
+        // was recorded as a test failure. A hierarchy that changed size
+        // while it was read was not scanned whole.
+        let candidates = all.snapshotsBoundByIndex()
+        guard candidates.count == total else { return nil }
+
         var found: [ScrollDiagnosis.AtPoint] = []
-        var index = 0
-        while index < total {
-            let candidate = all.element(boundBy: index)
-            index += 1
+        for candidate in candidates {
             // Every element sharing the identifier is the target or a twin of
             // it; neither is something drawn in front of it.
             if candidate.identifier == id { continue }

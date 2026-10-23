@@ -76,14 +76,17 @@ enum ScreenMarker {
         return "previous-screen-only: '\(screenId)' is not present; displayed screens are \(present)"
     }
 
-    /// Screen ids whose markers are currently in the hierarchy.
+    /// Screen ids whose markers are currently in the hierarchy, one per
+    /// marker, in the query's order. Read with one snapshot per marker
+    /// (snapshotsBoundByIndex): a marker that leaves while they are read —
+    /// a pop or a dismiss under the poll — is not there, never a failure.
     private static func presentMarkers(in app: XCUIApplication) -> [String] {
-        let query = app.descendants(matching: .any)
+        app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
-        return (0..<query.count).compactMap { index in
-            let identifier = query.element(boundBy: index).identifier
-            return identifier.hasPrefix(prefix) ? String(identifier.dropFirst(prefix.count)) : nil
-        }
+            .snapshotsBoundByIndex()
+            .compactMap { snapshot in
+                snapshot.identifier.hasPrefix(prefix) ? String(snapshot.identifier.dropFirst(prefix.count)) : nil
+            }
     }
 
     /// Screen ids OTHER than `screenId` whose markers are reachable.
@@ -92,16 +95,23 @@ enum ScreenMarker {
     /// put something on top of me". A sheet or fullScreenCover is another
     /// screen and carries its own marker; a coach mark, a loading scrim or a
     /// hand-rolled modal carries none.
+    ///
+    /// Each marker is asked by its own identifier, as the n-th of that
+    /// identifier: an index into all the markers moves when one of them
+    /// leaves, onto another screen's marker — `screenId`'s own among them.
+    /// `isHittable` of a marker that has left is false and records nothing,
+    /// but only after XCUITest's two seconds of retries; `exists` answers at
+    /// once (ScreenMarkerShrinkProbeUITests in SwiftJsonUI's ConformanceHost).
     static func hittableScreens(in app: XCUIApplication, excluding screenId: String) -> [String] {
-        let query = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
-        return (0..<query.count).compactMap { index -> String? in
-            let element = query.element(boundBy: index)
-            let identifier = element.identifier
-            guard identifier.hasPrefix(prefix) else { return nil }
-            let id = String(identifier.dropFirst(prefix.count))
-            guard id != screenId, element.isHittable else { return nil }
-            return id
+        var seen: [String: Int] = [:]
+        return presentMarkers(in: app).compactMap { id -> String? in
+            let nth = seen[id, default: 0]
+            seen[id] = nth + 1
+            guard id != screenId else { return nil }
+            let marker = app.descendants(matching: .any)
+                .matching(identifier: identifier(for: id))
+                .element(boundBy: nth)
+            return marker.exists && marker.isHittable ? id : nil
         }
     }
 }

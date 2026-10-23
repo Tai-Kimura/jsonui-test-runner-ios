@@ -371,12 +371,18 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
 
         // Read text from element (value first, then label). SwiftUI StaticText
         // reports an EMPTY string value while the actual text lives in the label.
-        func currentText() -> String {
+        // Both from one snapshot, and only of an element that is there: a read
+        // of one that is not yet (or no longer) there is not answered — XCUITest
+        // records it as a test failure and stops the test — so the poll could
+        // not wait for the text to appear. nil is "does not exist", one more
+        // look that says "not yet".
+        func currentText() -> String? {
             let element = self.findElementQuery(id: id, in: app)
-            if let valueText = element.value as? String, !valueText.isEmpty {
+            guard element.exists, let snapshot = try? element.snapshot() else { return nil }
+            if let valueText = snapshot.value as? String, !valueText.isEmpty {
                 return valueText
             }
-            return element.label
+            return snapshot.label
         }
         func matches(_ actual: String) -> Bool {
             if let expectedEquals = step.equals?.stringValue {
@@ -389,7 +395,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         }
 
         try pollUntil(timeout: timeout) {
-            let actualText = currentText()
+            guard let actualText = currentText() else { return "does not exist" }
             return matches(actualText) ? nil : "'\(actualText)'"
         } onTimeout: { reason in
             let expected = step.equals?.stringValue.map { "equals '\($0)'" } ?? "contains '\(step.contains ?? "")'"
