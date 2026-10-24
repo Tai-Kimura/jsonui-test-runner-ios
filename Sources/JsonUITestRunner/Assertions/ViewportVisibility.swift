@@ -46,6 +46,39 @@ enum ViewportVisibility {
         notVisibleReason(id: id, in: app) == nil
     }
 
+    /// `isVisible`, the target looked up inside `within` when given. A
+    /// missing container is not visible.
+    static func isVisible(id: String, within: String?, in app: XCUIApplication) -> Bool {
+        notVisibleReason(id: id, within: within, in: app) == nil
+    }
+
+    /// `notVisibleReason`, the target looked up inside `within` when given
+    /// (WithinScope.locate over the same snapshot). Without `within` it is
+    /// `notVisibleReason(id:in:)` unchanged.
+    static func notVisibleReason(id: String, within: String?, in app: XCUIApplication) -> String? {
+        guard let within else { return notVisibleReason(id: id, in: app) }
+        guard let root = try? app.snapshot() else { return "could not read the accessibility snapshot" }
+        let located = WithinScope.locate(
+            id: id, within: within, root: root,
+            identifier: { $0.identifier },
+            children: { $0.children },
+            frame: { $0.frame },
+            clips: { clippingTypes.contains($0.elementType) })
+        switch located {
+        case .found(let frame, let clips):
+            return VisibleFrame.inViewport(frame, clips: clips) ? nil : "not in the viewport"
+        case .containerMissing:
+            // In the query but not the snapshot: under a modal, as above.
+            return ElementScope.container(within, in: app).exists
+                ? ModalCover.reason(cover(in: app, root: root))
+                : WithinScope.containerNotFound(within: within, id: id)
+        case .targetMissing:
+            return ElementScope.element(id: id, within: within, in: app).exists
+                ? ModalCover.reason(cover(in: app, root: root))
+                : WithinScope.targetNotFound(id: id, within: within)
+        }
+    }
+
     /// nil when visible; otherwise why not, in the words the web driver uses.
     ///
     /// Not in the snapshot has two causes that used to share "does not

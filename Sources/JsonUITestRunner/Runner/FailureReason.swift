@@ -57,9 +57,9 @@ public enum FailureClassifier {
 
         if let actionError = error as? ActionError {
             switch actionError {
-            case .elementNotFound:
+            case .elementNotFound, .containerNotFound, .notFoundWithin:
                 return .elementNotFound
-            case .timeout, .timeoutAny:
+            case .timeout, .timeoutAny, .timeoutWithin:
                 return .timeout
             case .missingParameter, .unknownAction:
                 // The step could not be executed as written.

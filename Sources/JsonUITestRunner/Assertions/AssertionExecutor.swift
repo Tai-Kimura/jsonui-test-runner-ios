@@ -182,13 +182,18 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         if let responsive = condition.responsive, !ResponsiveRuntime.matches(responsive, app: app) {
             return false
         }
-        if let visibleId = condition.visible, !isInstantlyVisible(id: visibleId, in: app) {
+        // `within` scopes the three element checks (ElementScope): a missing
+        // container is not visible, so `visible` is unmet and `notVisible` /
+        // `hidden` hold.
+        if let visibleId = condition.visible,
+           !isInstantlyVisible(id: visibleId, within: condition.within, in: app) {
             return false
         }
-        if let notVisibleId = condition.notVisible, isInstantlyVisible(id: notVisibleId, in: app) {
+        if let notVisibleId = condition.notVisible,
+           isInstantlyVisible(id: notVisibleId, within: condition.within, in: app) {
             return false
         }
-        if let hiddenId = condition.hidden, !isHidden(id: hiddenId, in: app) {
+        if let hiddenId = condition.hidden, !isHidden(id: hiddenId, within: condition.within, in: app) {
             return false
         }
         if let stateCondition = condition.state {
@@ -283,7 +288,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         // SwiftUI accessibility *containers* report it false because
         // hit-testing resolves to a child.
         try pollUntil(timeout: timeout) {
-            ViewportVisibility.notVisibleReason(id: id, in: app)
+            ViewportVisibility.notVisibleReason(id: id, within: step.within, in: app)
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "visible", expected: "visible", actual: "\(reason) for '\(id)'")
         }
@@ -301,7 +306,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         // confirmationDialog is not visible by the predicate itself
         // (ViewportVisibility), not by hit-testing.
         try pollUntil(timeout: timeout) {
-            ViewportVisibility.isVisible(id: id, in: app) ? "still visible" : nil
+            // A missing container is not visible: this holds.
+            ViewportVisibility.isVisible(id: id, within: step.within, in: app) ? "still visible" : nil
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "\(reason) for '\(id)'")
         }
@@ -324,15 +330,17 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.missingParameter(assertion: "hidden", parameter: "id")
         }
         try pollUntil(timeout: timeout) {
-            self.isHidden(id: id, in: app) ? nil : "shown"
+            self.isHidden(id: id, within: step.within, in: app) ? nil : "shown"
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "hidden", expected: "hidden", actual: "\(reason) for '\(id)'")
         }
     }
 
-    /// The `hidden` predicate, once (also `when: { hidden }`).
-    private func isHidden(id: String, in app: XCUIApplication) -> Bool {
-        !findElementQuery(id: id, in: app).exists
+    /// The `hidden` predicate, once (also `when: { hidden }`): every element
+    /// with the id in scope is not drawn, as on web — not the first match
+    /// only (ElementScope.isHidden). A missing `within` container holds.
+    private func isHidden(id: String, within: String?, in app: XCUIApplication) -> Bool {
+        ElementScope.isHidden(id: id, within: within, in: app)
     }
 
     private func assertEnabled(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {
@@ -340,8 +348,10 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.missingParameter(assertion: "enabled", parameter: "id")
         }
         try pollUntil(timeout: timeout) {
-            let element = self.findElementQuery(id: id, in: app)
-            guard element.exists else { return "does not exist" }
+            let look = ElementScope.look(id: id, within: step.within, in: app)
+            guard case .found(let element) = look else {
+                return ElementScope.reason(look, id: id, within: step.within)
+            }
             return element.isEnabled ? nil : "disabled"
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "enabled", expected: "enabled", actual: "\(reason) for '\(id)'")
@@ -353,8 +363,10 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.missingParameter(assertion: "disabled", parameter: "id")
         }
         try pollUntil(timeout: timeout) {
-            let element = self.findElementQuery(id: id, in: app)
-            guard element.exists else { return "does not exist" }
+            let look = ElementScope.look(id: id, within: step.within, in: app)
+            guard case .found(let element) = look else {
+                return ElementScope.reason(look, id: id, within: step.within)
+            }
             return element.isEnabled ? "enabled" : nil
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "disabled", expected: "disabled", actual: "\(reason) for '\(id)'")
@@ -376,9 +388,19 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         // records it as a test failure and stops the test — so the poll could
         // not wait for the text to appear. nil is "does not exist", one more
         // look that says "not yet".
+        // The reason a look found nothing is kept: with `within` it names
+        // which of the container and the target was missing.
+        var missing = "does not exist"
         func currentText() -> String? {
-            let element = self.findElementQuery(id: id, in: app)
-            guard element.exists, let snapshot = try? element.snapshot() else { return nil }
+            let look = ElementScope.look(id: id, within: step.within, in: app)
+            guard case .found(let element) = look else {
+                missing = ElementScope.reason(look, id: id, within: step.within) ?? "does not exist"
+                return nil
+            }
+            guard let snapshot = try? element.snapshot() else {
+                missing = "does not exist"
+                return nil
+            }
             if let valueText = snapshot.value as? String, !valueText.isEmpty {
                 return valueText
             }
@@ -395,7 +417,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         }
 
         try pollUntil(timeout: timeout) {
-            guard let actualText = currentText() else { return "does not exist" }
+            guard let actualText = currentText() else { return missing }
             return matches(actualText) ? nil : "'\(actualText)'"
         } onTimeout: { reason in
             let expected = step.equals?.stringValue.map { "equals '\($0)'" } ?? "contains '\(step.contains ?? "")'"
@@ -411,7 +433,11 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.missingParameter(assertion: "count", parameter: "equals")
         }
         try pollUntil(timeout: timeout) {
-            let actualCount = app.descendants(matching: .any).matching(identifier: id).count
+            // With `within`: the matches inside the container. A missing
+            // container has nothing to count in and does not pass as 0.
+            guard let actualCount = ElementScope.count(id: id, within: step.within, in: app) else {
+                return WithinScope.containerNotFound(within: step.within ?? "", id: id)
+            }
             return actualCount == expectedCount ? nil : "\(actualCount)"
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "count", expected: "\(expectedCount)", actual: "\(reason) for '\(id)'")
@@ -481,9 +507,12 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         let fullImage = XCUIScreen.main.screenshot().image
         let capture: UIImage
         if let cropId = step.cropId {
-            let element = findElementQuery(id: cropId, in: app)
-            guard element.exists else {
-                throw AssertionError.elementNotFound(id: cropId)
+            let look = ElementScope.look(id: cropId, within: step.within, in: app)
+            guard case .found(let element) = look else {
+                guard let within = step.within else { throw AssertionError.elementNotFound(id: cropId) }
+                throw AssertionError.assertionFailed(
+                    assertion: "screenshot", expected: "'\(cropId)' within '\(within)' to crop to",
+                    actual: ElementScope.reason(look, id: cropId, within: within) ?? "")
             }
             capture = cropImage(fullImage, toFrame: element.frame) ?? fullImage
         } else {
@@ -568,8 +597,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
 
     /// Instant visibility check (no waiting) used by conditions
     /// `when: { visible / notVisible }` — the same predicate as the asserts.
-    private func isInstantlyVisible(id: String, in app: XCUIApplication) -> Bool {
-        ViewportVisibility.isVisible(id: id, in: app)
+    private func isInstantlyVisible(id: String, within: String?, in app: XCUIApplication) -> Bool {
+        ViewportVisibility.isVisible(id: id, within: within, in: app)
     }
 
     private func valuesMatch(expected: AnyCodable, actual: Any) -> Bool {
@@ -705,7 +734,8 @@ extension FlowTestStep {
             cropId: cropId,
             threshold: threshold,
             mocks: mocks,
-            orientation: orientation
+            orientation: orientation,
+            within: within
         )
     }
 }

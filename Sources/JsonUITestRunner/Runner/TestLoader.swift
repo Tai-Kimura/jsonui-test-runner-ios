@@ -389,7 +389,8 @@ extension TestLoader {
             cropId: substituteArgsInOptionalString(step.cropId, args: args),
             threshold: step.threshold,
             mocks: step.mocks,
-            orientation: step.orientation
+            orientation: step.orientation,
+            within: substituteArgsInOptionalString(step.within, args: args)
         )
     }
 

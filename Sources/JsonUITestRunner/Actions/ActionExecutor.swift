@@ -20,6 +20,13 @@ public enum ActionError: Error, LocalizedError {
     case timeout(id: String, timeout: Int)
     case timeoutAny(ids: [String], timeout: Int)
     case actionFailed(action: String, reason: String)
+    /// `within` names an element that is not there (WithinScope).
+    case containerNotFound(within: String, id: String)
+    /// `within`'s container is there and holds no element with `id`.
+    case notFoundWithin(id: String, within: String)
+    /// waitFor / waitForAny with `within` ran out of time; `containerFound`
+    /// says which of the two was missing.
+    case timeoutWithin(ids: [String], within: String, containerFound: Bool, timeout: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -35,6 +42,15 @@ public enum ActionError: Error, LocalizedError {
             return "Timeout waiting for any of elements '\(ids.joined(separator: ", "))' after \(timeout)ms"
         case .actionFailed(let action, let reason):
             return "Action '\(action)' failed: \(reason)"
+        case .containerNotFound(let within, let id):
+            return "Element not found: " + WithinScope.containerNotFound(within: within, id: id)
+        case .notFoundWithin(let id, let within):
+            return "Element not found: " + WithinScope.targetNotFound(id: id, within: within)
+        case .timeoutWithin(let ids, let within, let containerFound, let timeout):
+            let joined = ids.joined(separator: ", ")
+            return "Timeout after \(timeout)ms: " + (containerFound
+                ? WithinScope.targetNotFound(id: joined, within: within)
+                : WithinScope.containerNotFound(within: within, id: joined))
         }
     }
 }
@@ -151,7 +167,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "tap", parameter: "id")
         }
 
-        let element = try findTappableElement(id: id, in: app)
+        let element = try findTappableElement(id: id, step: step, in: app)
 
         // If text is specified, tap on the specific text portion within the element
         if let targetText = step.text {
@@ -186,11 +202,11 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// waits on the other half of "at rest": the frame must stop moving.
     /// Hittability is not the exit here — a decelerating element can be
     /// hittable and still slide out from under the tap.
-    private func settleAfterScroll(id: String, in app: XCUIApplication) {
+    private func settleAfterScroll(id: String, within: String?, in app: XCUIApplication) {
         let deadline = Date().addingTimeInterval(2.0)
         var previousFrame: CGRect?
         while Date() < deadline {
-            let element = findElementQuery(id: id, in: app)
+            let element = findElementQuery(id: id, within: within, in: app)
             guard element.exists else {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
                 continue
@@ -331,7 +347,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "doubleTap", parameter: "id")
         }
 
-        let element = try findTappableElement(id: id, in: app)
+        let element = try findTappableElement(id: id, step: step, in: app)
         element.doubleTap()
     }
 
@@ -340,7 +356,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "longPress", parameter: "id")
         }
 
-        let element = try findTappableElement(id: id, in: app)
+        let element = try findTappableElement(id: id, step: step, in: app)
         // Default 800ms, not 500ms: the iOS long-press recognizer minimum
         // (SwiftUI LongPressGesture / UILongPressGestureRecognizer) is 0.5s,
         // so a press of exactly 500ms races the recognizer and fires only
@@ -358,9 +374,9 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         defer { lastTypedAt = Date() }
-        let element = try findTypableElement(id: id, in: app)
+        let element = try findTypableElement(id: id, step: step, in: app)
         element.tap()
-        try focusForTyping(element, action: "input", id: id, in: app, retap: { element.tap() })
+        try focusForTyping(element, action: "input", id: id, within: step.within, in: app, retap: { element.tap() })
 
         // `input` SETS the field value (parity with the web driver's
         // Playwright fill() and Android's setText): clear existing text first.
@@ -380,7 +396,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             // The re-tap here is the caret tap, not a centre tap: a centre
             // tap would put the caret mid-text and the backspaces below
             // would leave the tail behind.
-            try focusForTyping(element, action: "input", id: id, in: app, retap: { caretToEnd.tap() })
+            try focusForTyping(element, action: "input", id: id, within: step.within, in: app,
+                               retap: { caretToEnd.tap() })
             let deleteString = String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count)
             element.typeText(deleteString)
         }
@@ -398,21 +415,21 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// when the element says it has the attribute, so an XCTest without it
     /// keeps the old behaviour instead of raising. Measured on Xcode 26.6 /
     /// iOS 26.5: 0 before the tap, 1 after, 0 after a return ends editing.
-    private func keyboardFocus(of element: XCUIElement, id: String,
+    private func keyboardFocus(of element: XCUIElement, id: String, within: String?,
                                in app: XCUIApplication) -> Bool? {
         guard element.responds(to: NSSelectorFromString("hasKeyboardFocus")) else { return nil }
-        return app.descendants(matching: element.elementType).matching(identifier: id)
+        return ElementScope.query(id: id, within: within, type: element.elementType, in: app)
             .containing(NSPredicate(format: "hasKeyboardFocus == true")).count > 0
     }
 
     /// Wait for the tap the caller made to deliver focus, tap again if it
     /// did not, and stop with the driver's reason rather than XCTest's if it
     /// never does. See `FocusForTyping` for why a tap is not enough.
-    private func focusForTyping(_ element: XCUIElement, action: String, id: String,
+    private func focusForTyping(_ element: XCUIElement, action: String, id: String, within: String?,
                                 in app: XCUIApplication, retap: () -> Void) throws {
         let policy = FocusForTyping()
         let outcome = policy.run(
-            isFocused: { keyboardFocus(of: element, id: id, in: app) },
+            isFocused: { keyboardFocus(of: element, id: id, within: within, in: app) },
             tap: retap,
             sleep: { Thread.sleep(forTimeInterval: $0) },
             now: { Date() })
@@ -451,9 +468,9 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         defer { lastTypedAt = Date() }
-        let element = try findTypableElement(id: id, in: app)
+        let element = try findTypableElement(id: id, step: step, in: app)
         element.tap()
-        try focusForTyping(element, action: "clear", id: id, in: app, retap: { element.tap() })
+        try focusForTyping(element, action: "clear", id: id, within: step.within, in: app, retap: { element.tap() })
 
         // Select all and delete
         if let stringValue = element.value as? String, !stringValue.isEmpty {
@@ -470,7 +487,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "scroll", parameter: "direction")
         }
 
-        let element = try findElement(id: id, in: app)
+        let element = try findElement(id: id, step: step, in: app)
 
         switch direction {
         case "up":
@@ -499,7 +516,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // "intersects the window" accepted one sitting under a bottom fixed
         // bar (swiped, then tapped the bar).
         func targetVisible() -> Bool {
-            let element = findElementQuery(id: id, in: app)
+            let element = findElementQuery(id: id, within: step.within, in: app)
             return element.exists && ScrollVisibility.canStopScrolling(isHittable: element.isHittable)
                 && VisibleFrame.hasArea(element.frame)
         }
@@ -510,7 +527,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // this is the last word before throwing, never a reason to skip the
         // scrolling.
         func targetPresentWithAFrame() -> Bool {
-            let element = findElementQuery(id: id, in: app)
+            let element = findElementQuery(id: id, within: step.within, in: app)
             return element.exists && VisibleFrame.hasArea(element.frame)
         }
 
@@ -571,7 +588,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         if try searchLeg(direction, deadline: Date().addingTimeInterval(timeout)) {
-            settleAfterScroll(id: id, in: app)
+            settleAfterScroll(id: id, within: step.within, in: app)
             return
         }
         // Reverse leg: grant it a real budget even when the primary leg burned
@@ -585,7 +602,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         default: reverse = "up"
         }
         if try searchLeg(reverse, deadline: Date().addingTimeInterval(max(timeout / 2, 6.0))) {
-            settleAfterScroll(id: id, in: app)
+            settleAfterScroll(id: id, within: step.within, in: app)
             return
         }
         // Both ends reached without bringing it on screen. If it is present
@@ -594,7 +611,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // tap resolves by scrolling to visible) work as it did, but say on
         // stderr that the scroll did not achieve it.
         if targetPresentWithAFrame() {
-            let element = findElementQuery(id: id, in: app)
+            let element = findElementQuery(id: id, within: step.within, in: app)
             // Observation, then guesses labelled as guesses, and the one
             // bit that says which guesses apply (ScrollDiagnosis).
             let viewport: CGRect? = (scroller == app) ? nil : scroller.frame
@@ -606,6 +623,14 @@ public class XCUITestActionExecutor: ActionExecutor {
                                          atHitPoint: elementsAtHitPoint(of: element, id: id, in: app),
                                          keyboard: visibleKeyboardFrame(in: app)))
             return
+        }
+        if let within = step.within {
+            let look = ElementScope.look(id: id, within: within, in: app)
+            throw ActionError.actionFailed(
+                action: "scrollUntilVisible",
+                reason: (ElementScope.reason(look, id: id, within: within) ?? "'\(id)' within '\(within)' not visible")
+                    + " after scrolling to both ends"
+            )
         }
         throw ActionError.actionFailed(
             action: "scrollUntilVisible",
@@ -620,7 +645,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         guard let variable = step.variable else {
             throw ActionError.missingParameter(action: "readText", parameter: "variable")
         }
-        let element = try findElement(id: id, in: app)
+        let element = try findElement(id: id, step: step, in: app)
         let text: String
         if let valueText = element.value as? String, !valueText.isEmpty {
             text = valueText
@@ -674,7 +699,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw ActionError.missingParameter(action: "swipe", parameter: "direction")
         }
 
-        let element = try findElement(id: id, in: app)
+        let element = try findElement(id: id, step: step, in: app)
 
         switch direction {
         case "up":
@@ -696,12 +721,15 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
-        let element = findElementQuery(id: id, in: app)
-
-        let exists = element.waitForExistence(timeout: timeout)
-        if !exists {
+        let look = ElementScope.wait(id: id, within: step.within, timeout: timeout, in: app)
+        if case .found = look { return }
+        guard let within = step.within else {
             throw ActionError.timeout(id: id, timeout: step.timeout ?? 5000)
         }
+        let containerFound: Bool
+        if case .containerMissing = look { containerFound = false } else { containerFound = true }
+        throw ActionError.timeoutWithin(ids: [id], within: within, containerFound: containerFound,
+                                        timeout: step.timeout ?? 5000)
     }
 
     private func executeWaitForAny(step: TestStep, in app: XCUIApplication) throws {
@@ -712,18 +740,27 @@ public class XCUITestActionExecutor: ActionExecutor {
         let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
         let startTime = Date()
 
-        // Poll until one element exists or timeout
+        // Poll until one element exists (inside `within`, when given) or timeout
+        var sawContainer = false
         while Date().timeIntervalSince(startTime) < timeout {
             for id in ids {
-                let element = findElementQuery(id: id, in: app)
-                if element.exists {
+                switch ElementScope.look(id: id, within: step.within, in: app) {
+                case .found:
                     return // Found one, success
+                case .targetMissing:
+                    sawContainer = true
+                case .containerMissing:
+                    break
                 }
             }
             Thread.sleep(forTimeInterval: 0.1) // Poll every 100ms
         }
 
-        throw ActionError.timeoutAny(ids: ids, timeout: step.timeout ?? 5000)
+        guard let within = step.within else {
+            throw ActionError.timeoutAny(ids: ids, timeout: step.timeout ?? 5000)
+        }
+        throw ActionError.timeoutWithin(ids: ids, within: within, containerFound: sawContainer,
+                                        timeout: step.timeout ?? 5000)
     }
 
     private func executeWait(step: TestStep) throws {
@@ -1245,7 +1282,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
 
         // Step 1: Tap the SelectBox to open the picker sheet
-        let selectBox = try findElement(id: id, in: app)
+        let selectBox = try findElement(id: id, step: step, in: app)
         selectBox.tap()
 
         // Step 2: Wait for either picker, together, for one budget — and for it
@@ -1455,11 +1492,11 @@ public class XCUITestActionExecutor: ActionExecutor {
         let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
 
         // Find the item using the generated testTag pattern: {collectionId}_item_{index}
+        // With `within`, looked up inside that container (ElementScope).
         let itemId = "\(id)_item_\(index)"
-        let element = app.descendants(matching: .any).matching(identifier: itemId).firstMatch
-
-        if !element.waitForExistence(timeout: timeout) {
-            throw ActionError.elementNotFound(id: itemId)
+        let look = ElementScope.wait(id: itemId, within: step.within, timeout: timeout, in: app)
+        guard case .found(let element) = look else {
+            throw scopeError(look, id: itemId, within: step.within)
         }
 
         element.tap()
@@ -1488,11 +1525,15 @@ public class XCUITestActionExecutor: ActionExecutor {
         // For SwiftUI mode (default), try accessibilityIdentifier pattern first
         if let id = step.id {
             let tabId = "\(id)_tab_\(index)"
-            let tabElement = app.descendants(matching: .any).matching(identifier: tabId).firstMatch
-
-            if tabElement.waitForExistence(timeout: timeout) {
+            let look = ElementScope.wait(id: tabId, within: step.within, timeout: timeout, in: app)
+            if case .found(let tabElement) = look {
                 tabElement.tap()
                 return
+            }
+            // Scoped to a container: the app's tab bar is outside it, so no
+            // fallback to it.
+            if step.within != nil {
+                throw scopeError(look, id: tabId, within: step.within)
             }
         }
 
@@ -1512,21 +1553,40 @@ public class XCUITestActionExecutor: ActionExecutor {
 
     // MARK: - Helper Methods
 
-    /// Fast element query using accessibilityIdentifier matching
-    private func findElementQuery(id: String, in app: XCUIApplication) -> XCUIElement {
+    /// Fast element query using accessibilityIdentifier matching, inside
+    /// `within` when given (ElementScope — the one resolution every
+    /// id-targeting step goes through).
+    private func findElementQuery(id: String, within: String? = nil, in app: XCUIApplication) -> XCUIElement {
         // Use firstMatch for faster lookup - it returns immediately when found
         // instead of scanning the entire hierarchy
-        return app.descendants(matching: .any).matching(identifier: id).firstMatch
+        return ElementScope.element(id: id, within: within, in: app)
     }
 
-    private func findElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
-        let element = findElementQuery(id: id, in: app)
+    /// How long a finder waits. Without `within` the fixed `defaultTimeout`,
+    /// as before; with it, the step's timeout (default `defaultTimeout`) for
+    /// the container and then the target.
+    private func lookupTimeout(_ step: TestStep) -> TimeInterval {
+        step.within == nil ? defaultTimeout : step.timeoutInterval(default: defaultTimeout)
+    }
 
-        // Wait briefly for element to appear
-        if !element.waitForExistence(timeout: defaultTimeout) {
-            throw ActionError.elementNotFound(id: id)
+    /// The error for a lookup that found nothing: unchanged without
+    /// `within`, naming the container (and the target) with it.
+    private func scopeError(_ look: ElementScope.Look, id: String, within: String?) -> ActionError {
+        switch look {
+        case .containerMissing:
+            return .containerNotFound(within: within ?? "", id: id)
+        case .targetMissing, .found:
+            guard let within else { return .elementNotFound(id: id) }
+            return .notFoundWithin(id: id, within: within)
         }
+    }
 
+    private func findElement(id: String, step: TestStep, in app: XCUIApplication) throws -> XCUIElement {
+        // Wait briefly for element to appear
+        let look = ElementScope.wait(id: id, within: step.within, timeout: lookupTimeout(step), in: app)
+        guard case .found(let element) = look else {
+            throw scopeError(look, id: id, within: step.within)
+        }
         return element
     }
 
@@ -1536,14 +1596,11 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// take keyboard focus — typeText then fails with "Neither element nor
     /// any descendant has keyboard focus". Prefer typable element types and
     /// only fall back to the generic match.
-    private func findTypableElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
-        let generic = findElementQuery(id: id, in: app)
-        guard generic.waitForExistence(timeout: defaultTimeout) else {
-            throw ActionError.elementNotFound(id: id)
-        }
+    private func findTypableElement(id: String, step: TestStep, in app: XCUIApplication) throws -> XCUIElement {
+        let generic = try findElement(id: id, step: step, in: app)
         let typableTypes: [XCUIElement.ElementType] = [.textField, .secureTextField, .textView, .searchField]
         for type in typableTypes {
-            let candidate = app.descendants(matching: type).matching(identifier: id).firstMatch
+            let candidate = ElementScope.query(id: id, within: step.within, type: type, in: app).firstMatch
             if candidate.exists {
                 return candidate
             }
@@ -1588,12 +1645,9 @@ public class XCUITestActionExecutor: ActionExecutor {
     /// RAISE ("Failed to get matching snapshot: No matches found") — an
     /// unguarded rewrite would throw on the most common path there is, an
     /// element that is not there.
-    private func findTappableElement(id: String, in app: XCUIApplication) throws -> XCUIElement {
-        let matches = app.descendants(matching: .any).matching(identifier: id)
-        let generic = matches.firstMatch
-        guard generic.waitForExistence(timeout: defaultTimeout) else {
-            throw ActionError.elementNotFound(id: id)
-        }
+    private func findTappableElement(id: String, step: TestStep, in app: XCUIApplication) throws -> XCUIElement {
+        let matches = ElementScope.query(id: id, within: step.within, in: app)
+        let generic = try findElement(id: id, step: step, in: app)
         let total = matches.count
         guard total > 0 else { return generic }
 
@@ -1621,7 +1675,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // that is rare and was previously the ONLY path.
         if ElementPreference.needsTypedSearch(totalMatches: total, firstPassWinner: firstPassWinner) {
             for type in ElementPreference.interactive {
-                let typed = app.descendants(matching: type).matching(identifier: id).firstMatch
+                let typed = ElementScope.query(id: id, within: step.within, type: type, in: app).firstMatch
                 if typed.exists { return typed }
             }
         }

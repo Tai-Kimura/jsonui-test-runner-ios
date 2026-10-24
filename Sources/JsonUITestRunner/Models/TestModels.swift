@@ -83,6 +83,11 @@ public struct WhenCondition: Codable {
     /// Instant check: element is not drawn (absent, gone or invisible),
     /// wherever it is — off screen or under a sheet it is drawn
     public let hidden: String?
+    /// Scopes `visible` / `notVisible` / `hidden`: the id is looked up
+    /// inside the element with this id (normally a collection cell,
+    /// `<collectionId>_item_<n>`). A missing container: visible is unmet,
+    /// notVisible and hidden hold.
+    public let within: String?
     /// Current platform matches
     public let platform: PlatformTarget?
     /// ViewModel state matches (requires a state provider)
@@ -98,12 +103,13 @@ public struct WhenCondition: Codable {
     public let unknownKeys: [String]
 
     /// Condition keys this driver knows how to evaluate.
-    private static let knownKeys: Set<String> = ["visible", "notVisible", "hidden", "platform", "state", "responsive"]
+    private static let knownKeys: Set<String> = ["visible", "notVisible", "hidden", "within", "platform", "state", "responsive"]
 
     private enum CodingKeys: String, CodingKey {
         case visible
         case notVisible
         case hidden
+        case within
         case platform
         case state
         case responsive
@@ -122,6 +128,7 @@ public struct WhenCondition: Codable {
         self.visible = try container.decodeIfPresent(String.self, forKey: .visible)
         self.notVisible = try container.decodeIfPresent(String.self, forKey: .notVisible)
         self.hidden = try container.decodeIfPresent(String.self, forKey: .hidden)
+        self.within = try container.decodeIfPresent(String.self, forKey: .within)
         self.platform = try container.decodeIfPresent(PlatformTarget.self, forKey: .platform)
         self.state = try container.decodeIfPresent(StateCondition.self, forKey: .state)
         self.responsive = try container.decodeIfPresent(ResponsiveCondition.self, forKey: .responsive)
@@ -245,6 +252,8 @@ public struct FlowTestStep: Codable {
     public let when: WhenCondition?
     public let retryTapIfNoChange: Bool?
     public let container: String?
+    /// The id of the element the target id is looked up inside (WithinScope)
+    public let within: String?
     public let variable: String?
     public let times: Int?
     public let `while`: WhenCondition?
@@ -321,6 +330,8 @@ public struct TestStep: Codable {
     public let when: WhenCondition?
     public let retryTapIfNoChange: Bool?
     public let container: String?
+    /// The id of the element the target id is looked up inside (WithinScope)
+    public let within: String?
     public let variable: String?
     public let times: Int?
     public let `while`: WhenCondition?
@@ -371,7 +382,8 @@ public struct TestStep: Codable {
         cropId: String? = nil,
         threshold: Double? = nil,
         mocks: [String: String]? = nil,
-        orientation: String? = nil
+        orientation: String? = nil,
+        within: String? = nil
     ) {
         self.action = action
         self.assert = assert
@@ -407,6 +419,7 @@ public struct TestStep: Codable {
         self.threshold = threshold
         self.mocks = mocks
         self.orientation = orientation
+        self.within = within
     }
 
     public var isAction: Bool {
