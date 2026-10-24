@@ -83,9 +83,26 @@ enum WithinScope {
     /// scope: it holds when none of them is drawn — the web driver's rule
     /// (`els.every(el => !drawn)`). On iOS an element is drawn when it is in
     /// XCUITest's tree (SwiftJsonUI takes a gone / invisible / hidden view out
-    /// of it), so a match is drawn by being a match. A missing container holds.
+    /// of it), so a match is drawn by being a match. A missing container
+    /// FAILS it (see `missingContainerFails`).
     static func hiddenHolds(containerMissing: Bool, drawn: [Bool]) -> Bool {
-        if containerMissing { return true }
+        if containerMissing { return false }
         return drawn.allSatisfy { !$0 }
+    }
+
+    /// `notVisible` over the target in scope: the negation of `visible`,
+    /// except that a missing container FAILS it (see `missingContainerFails`).
+    static func notVisibleHolds(containerMissing: Bool, visible: Bool) -> Bool {
+        !containerMissing && !visible
+    }
+
+    /// A step's or a condition's `within` names a container that is not in
+    /// the tree: `visible`, `notVisible`, `hidden` and `count` fail and a
+    /// condition is unmet, as on web and Android. A cell that is not drawn
+    /// would otherwise pass "this cell's badge is not shown"; to claim the
+    /// cell itself is gone, `hidden` is written on the cell's id without
+    /// `within`.
+    static func missingContainerFails(within: String?, containerExists: Bool) -> Bool {
+        within != nil && !containerExists
     }
 }

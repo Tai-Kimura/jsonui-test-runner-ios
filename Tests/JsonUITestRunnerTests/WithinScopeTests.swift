@@ -144,7 +144,22 @@ final class WithinScopeTests: XCTestCase {
         XCTAssertTrue(WithinScope.hiddenHolds(containerMissing: false, drawn: [false, false]))
     }
 
-    func testHiddenHoldsWhenTheContainerIsMissing() {
-        XCTAssertTrue(WithinScope.hiddenHolds(containerMissing: true, drawn: [true]))
+    func testHiddenFailsWhenTheContainerIsMissing() {
+        XCTAssertFalse(WithinScope.hiddenHolds(containerMissing: true, drawn: []))
+        XCTAssertFalse(WithinScope.hiddenHolds(containerMissing: true, drawn: [true]))
+    }
+
+    func testNotVisibleFailsWhenTheContainerIsMissing() {
+        XCTAssertFalse(WithinScope.notVisibleHolds(containerMissing: true, visible: false))
+        XCTAssertTrue(WithinScope.notVisibleHolds(containerMissing: false, visible: false))
+        XCTAssertFalse(WithinScope.notVisibleHolds(containerMissing: false, visible: true))
+    }
+
+    func testAMissingContainerFailsOnlyWithWithin() {
+        XCTAssertTrue(WithinScope.missingContainerFails(within: "list_item_9", containerExists: false))
+        XCTAssertFalse(WithinScope.missingContainerFails(within: "list_item_1", containerExists: true))
+        // Without within there is no container: a missing target is the
+        // step's own matter (notVisible / hidden hold on it).
+        XCTAssertFalse(WithinScope.missingContainerFails(within: nil, containerExists: false))
     }
 }

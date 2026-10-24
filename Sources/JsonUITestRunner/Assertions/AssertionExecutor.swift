@@ -183,8 +183,13 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             return false
         }
         // `within` scopes the three element checks (ElementScope): a missing
-        // container is not visible, so `visible` is unmet and `notVisible` /
-        // `hidden` hold.
+        // container leaves all three unmet (WithinScope.missingContainerFails).
+        if condition.visible != nil || condition.notVisible != nil || condition.hidden != nil,
+           let within = condition.within,
+           WithinScope.missingContainerFails(within: within,
+                                             containerExists: ElementScope.container(within, in: app).exists) {
+            return false
+        }
         if let visibleId = condition.visible,
            !isInstantlyVisible(id: visibleId, within: condition.within, in: app) {
             return false
@@ -306,8 +311,12 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         // confirmationDialog is not visible by the predicate itself
         // (ViewportVisibility), not by hit-testing.
         try pollUntil(timeout: timeout) {
-            // A missing container is not visible: this holds.
-            ViewportVisibility.isVisible(id: id, within: step.within, in: app) ? "still visible" : nil
+            // A missing container fails this, as it does `visible`.
+            if let within = step.within, !ElementScope.container(within, in: app).exists {
+                return WithinScope.containerNotFound(within: within, id: id)
+            }
+            let visible = ViewportVisibility.isVisible(id: id, within: step.within, in: app)
+            return WithinScope.notVisibleHolds(containerMissing: false, visible: visible) ? nil : "still visible"
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "notVisible", expected: "not visible", actual: "\(reason) for '\(id)'")
         }
@@ -330,7 +339,10 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             throw AssertionError.missingParameter(assertion: "hidden", parameter: "id")
         }
         try pollUntil(timeout: timeout) {
-            self.isHidden(id: id, within: step.within, in: app) ? nil : "shown"
+            if let within = step.within, !ElementScope.container(within, in: app).exists {
+                return WithinScope.containerNotFound(within: within, id: id)
+            }
+            return self.isHidden(id: id, within: step.within, in: app) ? nil : "shown"
         } onTimeout: { reason in
             AssertionError.assertionFailed(assertion: "hidden", expected: "hidden", actual: "\(reason) for '\(id)'")
         }
@@ -338,7 +350,7 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
 
     /// The `hidden` predicate, once (also `when: { hidden }`): every element
     /// with the id in scope is not drawn, as on web — not the first match
-    /// only (ElementScope.isHidden). A missing `within` container holds.
+    /// only (ElementScope.isHidden). A missing `within` container fails it.
     private func isHidden(id: String, within: String?, in app: XCUIApplication) -> Bool {
         ElementScope.isHidden(id: id, within: within, in: app)
     }

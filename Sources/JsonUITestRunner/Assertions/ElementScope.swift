@@ -85,7 +85,7 @@ enum ElementScope {
     }
 
     /// The `hidden` predicate: none of the elements with the id in scope is
-    /// drawn (WithinScope.hiddenHolds). A missing container holds.
+    /// drawn (WithinScope.hiddenHolds). A missing container fails it.
     static func isHidden(id: String, within: String?, in app: XCUIApplication) -> Bool {
         guard let total = count(id: id, within: within, in: app) else {
             return WithinScope.hiddenHolds(containerMissing: true, drawn: [])
