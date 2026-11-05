@@ -1184,26 +1184,37 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         var sawAlert = false
         var sawButtonNotHittable = false
+        // Kept to the deadline, not thrown at once: two alerts crossing over
+        // can show the name twice for a moment.
+        var sawDifferentButtons: Int?
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
             for provider in providers {
                 for container in [provider.alerts.firstMatch, provider.sheets.firstMatch] {
                     guard container.exists else { continue }
                     sawAlert = true
-                    let button = container.buttons[buttonText]
-                    if button.exists {
+                    switch container.buttons.pickButton(buttonText) {
+                    case .absent:
+                        break
+                    case .button(let button):
                         if try confirmDismissTap(button, label: buttonText, deadline: deadline) { return }
                         sawButtonNotHittable = true
+                    case .different(let count):
+                        sawDifferentButtons = count
                     }
                 }
             }
 
             // The Save Password sheet exposes its buttons directly under
             // SpringBoard on some iOS versions, outside alerts/sheets queries.
-            let systemButton = springboard.buttons[buttonText]
-            if systemButton.exists {
+            switch springboard.buttons.pickButton(buttonText) {
+            case .absent:
+                break
+            case .button(let systemButton):
                 if try confirmDismissTap(systemButton, label: buttonText, deadline: deadline) { return }
                 sawButtonNotHittable = true
+            case .different(let count):
+                sawDifferentButtons = count
             }
 
             // Keyboard-area system overlays (the "Use Strong Password?" sheet)
@@ -1227,16 +1238,23 @@ public class XCUITestActionExecutor: ActionExecutor {
             //      transient snapshot.
             if app.buttons["GenerateStrongPasswordButton"].exists {
                 sawAlert = true
-                let sheetClose = app.buttons["xmark"]
-                if sheetClose.exists {
+                switch app.buttons.pickButton("xmark") {
+                case .absent:
+                    break
+                case .button(let sheetClose):
                     if try confirmDismissTap(sheetClose, label: "xmark", deadline: deadline) { return }
                     sawButtonNotHittable = true
+                case .different(let count):
+                    sawDifferentButtons = count
                 }
             }
 
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         } while Date() < deadline
 
+        if let count = sawDifferentButtons {
+            throw ActionError.actionFailed(action: "alertTap", reason: "\(count) different buttons are called '\(buttonText)', so the step does not say which to tap")
+        }
         if sawButtonNotHittable {
             throw ActionError.actionFailed(action: "alertTap", reason: "Button '\(buttonText)' was found but never hittable within \(Int(timeout * 1000))ms")
         }
@@ -1841,10 +1859,12 @@ public class XCUITestActionExecutor: ActionExecutor {
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
             let alert = springboard.alerts.firstMatch
-            if alert.exists {
-                for label in Self.photoAlertGrantLabels where alert.buttons[label].exists {
-                    alert.buttons[label].tap()
-                    return
+            if alert.exists, !SameButton.isAnotherServicesPrompt(alert.identifier) {
+                for label in Self.photoAlertGrantLabels {
+                    if case .button(let button) = alert.buttons.pickButton(label) {
+                        button.tap()
+                        return
+                    }
                 }
             }
             Thread.sleep(forTimeInterval: 0.25)
