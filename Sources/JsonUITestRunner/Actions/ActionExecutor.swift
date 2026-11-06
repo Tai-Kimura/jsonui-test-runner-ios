@@ -218,6 +218,68 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
     }
 
+    /// The navigation bar in front, or nil. Its frame only: what is in the bar
+    /// is not this question (TopBarCover).
+    private func navigationBarFrame(in app: XCUIApplication) -> CGRect? {
+        let bar = app.navigationBars.firstMatch
+        return bar.exists ? bar.frame : nil
+    }
+
+    /// Whether a scroll container holds `id`, and the innermost one's frame.
+    private func enclosingScroller(id: String, in app: XCUIApplication) -> CGRect? {
+        guard let located = ViewportVisibility.locate(id: id, in: app), located.clips.count > 1 else { return nil }
+        return located.clips.last
+    }
+
+    /// Slow drags with no momentum until the target's centre is in the band a
+    /// finger can press, read again after each. Used when its position is
+    /// known, because a swipe can only guess how far it will carry. Returns
+    /// whether it is there at the end; false moves nothing further and fails
+    /// nothing, the caller decides.
+    @discardableResult
+    private func aimIntoBand(_ element: XCUIElement, id: String, in app: XCUIApplication, drags: Int = 4) -> Bool {
+        for _ in 0..<drags {
+            guard element.exists, VisibleFrame.hasArea(element.frame),
+                  let scroller = enclosingScroller(id: id, in: app) else { return false }
+            let band = TopBarCover.band(bar: navigationBarFrame(in: app), scroller: scroller,
+                                        keyboard: visibleKeyboardFrame(in: app), window: app.frame)
+            let before = element.frame
+            guard let drag = TopBarCover.drag(for: before, in: band) else {
+                return before.midY >= band.minY && before.midY <= band.maxY
+            }
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: band.midX, dy: drag.from))
+            let end = origin.withOffset(CGVector(dx: band.midX, dy: drag.to))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.2)
+            if element.frame == before { return false }
+        }
+        guard let scroller = enclosingScroller(id: id, in: app) else { return false }
+        let band = TopBarCover.band(bar: navigationBarFrame(in: app), scroller: scroller,
+                                    keyboard: visibleKeyboardFrame(in: app), window: app.frame)
+        let midY = element.frame.midY
+        return midY >= band.minY && midY <= band.maxY
+    }
+
+    /// Before a tap of any kind: a target at rest under the navigation bar is
+    /// brought clear, because the tap would land on the bar and press nothing,
+    /// and XCTest would call it done (TopBarCover). It is said on stderr, and
+    /// nothing is pressed twice. When it cannot be brought clear (content laid
+    /// under the bar on purpose stays there) the tap goes where it always did,
+    /// and that is said too.
+    private func bringClearOfNavigationBar(_ element: XCUIElement, id: String, action: String, in app: XCUIApplication) {
+        guard element.exists, let bar = navigationBarFrame(in: app) else { return }
+        let frame = element.frame
+        guard TopBarCover.covers(frame, bar: bar, inScroller: true),
+              enclosingScroller(id: id, in: app) != nil else { return }
+        if aimIntoBand(element, id: id, in: app) {
+            note("\(action) '\(id)': its frame \(frame) was under the navigation bar \(bar), where a tap presses the bar — "
+                + "scrolled clear first, now \(element.frame)")
+        } else {
+            note("\(action) '\(id)': ⚠️ its frame \(element.frame) is under the navigation bar \(bar) and did not scroll clear — "
+                + "tapping it anyway; if nothing responds, this is why")
+        }
+    }
+
     /// Tap an element findTappableElement accepted. Acceptance is by
     /// existence and a non-empty frame, but `XCUIElement.tap()` demands
     /// `isHittable`, and XCTest answers false for elements it does see:
@@ -237,6 +299,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // A keyboard that is still settling after typing can come back over
         // the target between this read and the tap; read it once it is still.
         settleKeyboardAfterTyping(in: app)
+        bringClearOfNavigationBar(element, id: id, action: action, in: app)
         var hittable = element.isHittable
         var frame = element.frame
         var route = TapRouting.route(isHittable: hittable, frame: frame, appFrame: app.frame,
@@ -348,6 +411,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
 
         let element = try findTappableElement(id: id, step: step, in: app)
+        bringClearOfNavigationBar(element, id: id, action: "doubleTap", in: app)
         element.doubleTap()
     }
 
@@ -362,6 +426,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // so a press of exactly 500ms races the recognizer and fires only
         // sometimes. The press must comfortably exceed the threshold.
         let duration = TimeInterval(step.duration ?? 800) / 1000.0
+        bringClearOfNavigationBar(element, id: id, action: "longPress", in: app)
         element.press(forDuration: duration)
     }
 
@@ -375,6 +440,7 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         defer { lastTypedAt = Date() }
         let element = try findTypableElement(id: id, step: step, in: app)
+        bringClearOfNavigationBar(element, id: id, action: "input", in: app)
         element.tap()
         try focusForTyping(element, action: "input", id: id, within: step.within, in: app, retap: { element.tap() })
 
@@ -469,6 +535,7 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         defer { lastTypedAt = Date() }
         let element = try findTypableElement(id: id, step: step, in: app)
+        bringClearOfNavigationBar(element, id: id, action: "clear", in: app)
         element.tap()
         try focusForTyping(element, action: "clear", id: id, within: step.within, in: app, retap: { element.tap() })
 
@@ -515,10 +582,27 @@ public class XCUITestActionExecutor: ActionExecutor {
         // hundreds of points below the viewport (no swipe at all), and
         // "intersects the window" accepted one sitting under a bottom fixed
         // bar (swiped, then tapped the bar).
+        var legAxisIsVertical = true
         func targetVisible() -> Bool {
             let element = findElementQuery(id: id, within: step.within, in: app)
             return element.exists && ScrollVisibility.canStopScrolling(isHittable: element.isHittable)
                 && VisibleFrame.hasArea(element.frame)
+                && !(TopBarCover.covers(element.frame, bar: navigationBarFrame(in: app), inScroller: true)
+                    && enclosingScroller(id: id, in: app) != nil)
+        }
+
+        // A swipe carries on after the finger lifts, and a narrow screen (a
+        // keyboard up) has less room than one swipe travels: the read right
+        // after it is of a target still moving, and where it stops may be
+        // past the band. So read it once it is still, and when its position
+        // is known, drag it the rest of the way instead of swiping again.
+        func cameToRest() -> Bool {
+            let element = findElementQuery(id: id, within: step.within, in: app)
+            guard element.exists else { return targetVisible() }
+            settleAfterScroll(id: id, within: step.within, in: app)
+            if targetVisible() { return true }
+            if legAxisIsVertical { aimIntoBand(element, id: id, in: app) }
+            return targetVisible()
         }
 
         // What the old rule accepted. Tightening the STOP condition must not
@@ -555,6 +639,7 @@ public class XCUITestActionExecutor: ActionExecutor {
         // step a correct no-op, and a down-only search then ran to the bottom
         // while the target sat just above the viewport).
         func searchLeg(_ legDirection: String, deadline: Date) throws -> Bool {
+            legAxisIsVertical = legDirection == "up" || legDirection == "down"
             var previousSnapshot = ""
             var unchangedCount = 0
 
@@ -568,7 +653,7 @@ public class XCUITestActionExecutor: ActionExecutor {
                     throw ActionError.actionFailed(action: "scrollUntilVisible", reason: "Invalid direction: \(legDirection)")
                 }
 
-                if targetVisible() {
+                if cameToRest() {
                     return true
                 }
 
@@ -1301,6 +1386,7 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         // Step 1: Tap the SelectBox to open the picker sheet
         let selectBox = try findElement(id: id, step: step, in: app)
+        bringClearOfNavigationBar(selectBox, id: id, action: "selectOption", in: app)
         selectBox.tap()
 
         // Step 2: Wait for either picker, together, for one budget — and for it
@@ -1517,6 +1603,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             throw scopeError(look, id: itemId, within: step.within)
         }
 
+        bringClearOfNavigationBar(element, id: itemId, action: "tapItem", in: app)
         element.tap()
     }
 

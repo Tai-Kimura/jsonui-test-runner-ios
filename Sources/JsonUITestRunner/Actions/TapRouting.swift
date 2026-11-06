@@ -64,6 +64,56 @@ public enum ScrollVisibility {
     }
 }
 
+/// A target in a scroll view that has come to rest under the navigation bar.
+///
+/// `isHittable` does not answer this. A scroll view runs up behind the bar, and
+/// measured 2026-11-06 (iPhone 17, iOS 27.2, keyboard up, bar at 62..116): a
+/// SelectBox centred at y 30, 45 or 65 reported isHittable true, no scroll to
+/// visible ran, and tap, doubleTap, selectOption and input all landed on the
+/// bar and pressed nothing. At y 55 and 75 it reported false; from y 85 the tap
+/// reached the box. Without a navigation bar the same box was pressable from
+/// y 30 to 85, and under a tab bar isHittable answered false. So the band is the
+/// navigation bar's, from the window's top to the bar's bottom, whatever
+/// isHittable says.
+///
+/// A keyboard makes this common: the band left to see in is about 370pt, one
+/// swipe travels further than that, and the scroll comes to rest past the
+/// target. The target can be under the bar then, with nothing else to say so.
+///
+/// Only a target inside a scroll container counts. A button of the bar itself
+/// is inside the band and is the thing to press.
+public enum TopBarCover {
+    /// Whether the target's centre is in the bar's band. `bar` is nil when
+    /// the screen has no navigation bar.
+    public static func covers(_ frame: CGRect, bar: CGRect?, inScroller: Bool) -> Bool {
+        guard inScroller, let bar, !bar.isEmpty, !bar.isNull else { return false }
+        if frame.isNull || frame.isInfinite || frame.isEmpty { return false }
+        return frame.midY < bar.maxY && frame.midX >= bar.minX && frame.midX <= bar.maxX
+    }
+
+    /// Where a target can be seen and pressed: below the bar, above whatever
+    /// ends first of the scroller, the keyboard and the window.
+    public static func band(bar: CGRect?, scroller: CGRect, keyboard: CGRect?, window: CGRect) -> CGRect {
+        let top = max(bar?.maxY ?? scroller.minY, scroller.minY, window.minY)
+        var bottom = min(scroller.maxY, window.maxY)
+        if let keyboard, !keyboard.isNull, !keyboard.isEmpty { bottom = min(bottom, keyboard.minY) }
+        return CGRect(x: scroller.minX, y: top, width: scroller.width, height: max(0, bottom - top))
+    }
+
+    /// One drag that moves the target towards the band's middle, without
+    /// leaving the band: nil when the target's centre is already inside it, or
+    /// there is no band to drag in. Longer ways take several drags.
+    public static func drag(for frame: CGRect, in band: CGRect, margin: CGFloat = 12) -> (from: CGFloat, to: CGFloat)? {
+        guard band.height > margin * 2 + 20 else { return nil }
+        if frame.midY >= band.minY && frame.midY <= band.maxY { return nil }
+        let room = band.height - margin * 2
+        let wanted = band.midY - frame.midY
+        let travel = min(abs(wanted), room)
+        if wanted > 0 { return (band.minY + margin, band.minY + margin + travel) }
+        return (band.maxY - margin, band.maxY - margin - travel)
+    }
+}
+
 /// The one decision `tap`, its ghost-tap retry and the keyboard dismiss key
 /// share. Pure, so it is unit-tested with the measured shapes: a PHPicker
 /// thumbnail at {{0, 312}, {132.9, 133}} on a 402pt-wide simulator that
