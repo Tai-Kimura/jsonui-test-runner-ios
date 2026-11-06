@@ -52,12 +52,16 @@ enum ScreenMarker {
     /// while the previous screen's marker still being the only one present
     /// points at the app or the test: the navigation did not happen.
     static func diagnosis(screenId: String, in app: XCUIApplication) -> String {
-        let target = app.descendants(matching: .any)
-            .matching(identifier: identifier(for: screenId)).firstMatch
-        let present = presentMarkers(in: app)
+        diagnosis(screenId: screenId, present: presentMarkers(in: app),
+                  covering: hittableScreens(in: app, excluding: screenId))
+    }
 
-        if target.exists {
-            let covering = hittableScreens(in: app, excluding: screenId)
+    /// One read of the markers for both halves of the sentence: asked apart, a
+    /// screen that came between them read "'x' is not present; displayed
+    /// screens are ["x"]" (the Android driver's, at load 70).
+    static func diagnosis(screenId: String, present: [String], covering: @autoclosure () -> [String]) -> String {
+        if present.contains(screenId) {
+            let covering = covering()
             if covering.isEmpty {
                 return "marker-not-displayed: '\(screenId)' exists but is not hittable, and no "
                     + "other screen is displayed either — the transition is probably still "
