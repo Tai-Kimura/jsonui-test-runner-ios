@@ -10,6 +10,14 @@ import Photos
 public protocol ActionExecutor {
     func execute(step: TestStep, in app: XCUIApplication) throws
     func execute(flowStep: FlowTestStep, in app: XCUIApplication) throws
+    /// Notices the last actions left for the case's result (setSliderValue's
+    /// landed value); emptied by the call.
+    func drainWarnings() -> [String]
+}
+
+public extension ActionExecutor {
+    /// An executor that leaves no notices.
+    func drainWarnings() -> [String] { [] }
 }
 
 /// Errors that can occur during action execution
@@ -81,6 +89,16 @@ public class XCUITestActionExecutor: ActionExecutor {
         self.variables = variables
     }
 
+    /// Notices an action leaves in the case's result (setSliderValue's landed
+    /// value). The runner drains them after each action.
+    private var collectedWarnings: [String] = []
+
+    public func drainWarnings() -> [String] {
+        let drained = collectedWarnings
+        collectedWarnings = []
+        return drained
+    }
+
     public func execute(step: TestStep, in app: XCUIApplication) throws {
         guard let action = step.action else {
             throw ActionError.unknownAction(action: "nil")
@@ -127,6 +145,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeSelectTab(step: step, in: app)
         case "readText":
             try executeReadText(step: step, in: app)
+        case "setSliderValue":
+            try executeSetSliderValue(step: step, in: app)
         case "setLocation":
             try executeSetLocation(step: step)
         case "setViewport":
@@ -738,6 +758,97 @@ public class XCUITestActionExecutor: ActionExecutor {
             text = element.label
         }
         variables.set(variable, to: text)
+    }
+
+    /// Put a slider at `value` (its own units) the way a finger does: XCUITest
+    /// cannot set a slider's value, and `adjust(toNormalizedSliderPosition:)`
+    /// lands far off (SliderPlan). The bounds come from `range`, else from
+    /// the slider moved to both ends; a value outside them or off the declared
+    /// step grid is refused before the value is placed. The thumb is dragged
+    /// (SliderPlan.nextDrag) until the value it reads is within the tolerance
+    /// (half of `step`, else 0.5% of the range), at most three moves to the
+    /// value. Where it landed goes into the case's warnings, passed or failed.
+    private func executeSetSliderValue(step: TestStep, in app: XCUIApplication) throws {
+        guard let id = step.id else {
+            throw ActionError.missingParameter(action: "setSliderValue", parameter: "id")
+        }
+        guard let text = step.value, let value = Double(text) else {
+            throw ActionError.missingParameter(action: "setSliderValue", parameter: "value (a number)")
+        }
+        let slider = try findSlider(id: id, step: step, in: app)
+
+        func reading() -> SliderPlan.Reading? {
+            (slider.value as? String).flatMap(SliderPlan.parse)
+        }
+        let lo: Double, hi: Double
+        if let range = step.range {
+            guard range.count == 2, range[0] < range[1] else {
+                throw ActionError.actionFailed(action: "setSliderValue",
+                    reason: "'\(id)': range must be [minimum, maximum], got \(range.map(SliderPlan.format))")
+            }
+            (lo, hi) = (range[0], range[1])
+        } else {
+            // The ends read exactly when the thumb comes from afar (measured):
+            // the middle first, so neither end is a short move.
+            slider.adjust(toNormalizedSliderPosition: 0.5)
+            slider.adjust(toNormalizedSliderPosition: 1)
+            let top = reading()
+            slider.adjust(toNormalizedSliderPosition: 0)
+            let bottom = reading()
+            guard case .number(let b)? = bottom, case .number(let t)? = top, b < t else {
+                let shown = (slider.value as? String) ?? "nothing"
+                throw ActionError.actionFailed(action: "setSliderValue",
+                    reason: "'\(id)' reports its value as \(shown), which does not give its bounds"
+                        + " (iOS shows 0...1 and 0...100 sliders as a percentage): give range")
+            }
+            (lo, hi) = (b, t)
+        }
+        if let refusal = SliderPlan.refusal(id: id, value: value, min: lo, max: hi, step: step.step) {
+            throw ActionError.actionFailed(action: "setSliderValue", reason: refusal)
+        }
+        let tolerance = SliderPlan.tolerance(min: lo, max: hi, step: step.step)
+        func current() throws -> Double {
+            guard let r = reading(), let v = SliderPlan.value(of: r, min: lo, max: hi) else {
+                throw ActionError.actionFailed(action: "setSliderValue",
+                    reason: "'\(id)': its value '\((slider.value as? String) ?? "")' is not a number")
+            }
+            return v
+        }
+        var now = try current()
+        var moves = 0, drags = 0
+        while abs(now - value) > tolerance && moves < 3 && drags < 8 {
+            let frame = slider.frame
+            let drag = SliderPlan.nextDrag(current: now, target: value, min: lo, max: hi,
+                                           minX: frame.minX, width: frame.width, screenWidth: app.frame.width)
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            origin.withOffset(CGVector(dx: drag.from, dy: frame.midY))
+                .press(forDuration: 0.05,
+                       thenDragTo: origin.withOffset(CGVector(dx: drag.to, dy: frame.midY)),
+                       withVelocity: 150,
+                       thenHoldForDuration: 0.3)
+            drags += 1
+            if !drag.isStepAway { moves += 1 }
+            now = try current()
+        }
+        let landed = "setSliderValue '\(id)': landed at \(SliderPlan.format(now))"
+            + " (value \(SliderPlan.format(value)), tolerance \(SliderPlan.format(tolerance)), \(drags) drag\(drags == 1 ? "" : "s"))"
+        collectedWarnings.append(landed)
+        if abs(now - value) > tolerance {
+            throw ActionError.actionFailed(action: "setSliderValue",
+                reason: "'\(id)' is at \(SliderPlan.format(now)), not within \(SliderPlan.format(tolerance))"
+                    + " of \(SliderPlan.format(value)) after \(drags) drag\(drags == 1 ? "" : "s")")
+        }
+    }
+
+    /// The slider with `id`: a match of type slider first, as tap steps
+    /// prefer an interactive type over a mirror under the same id.
+    private func findSlider(id: String, step: TestStep, in app: XCUIApplication) throws -> XCUIElement {
+        let generic = try findElement(id: id, step: step, in: app)
+        let typed = ElementScope.query(id: id, within: step.within, type: .slider, in: app).firstMatch
+        if typed.exists { return typed }
+        if generic.elementType == .slider { return generic }
+        throw ActionError.actionFailed(action: "setSliderValue",
+            reason: "'\(id)' is not a slider (it is \(generic.elementType.rawValue))")
     }
 
     private func executeSetLocation(step: TestStep) throws {

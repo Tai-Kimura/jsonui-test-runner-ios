@@ -921,6 +921,9 @@ public class JsonUITestRunner {
         }
 
         if step.isAction {
+            // Drained when the action fails too: setSliderValue's landed value
+            // belongs in the result either way.
+            defer { warnings.append(contentsOf: actionExecutor.drainWarnings()) }
             try actionExecutor.execute(step: step, in: app)
         } else if step.isAssertion {
             try assertionExecutor.execute(step: step, in: app)

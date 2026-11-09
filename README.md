@@ -213,6 +213,7 @@ JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングさ�
 | `wait` | 固定時間待機 |
 | `back` | 戻る |
 | `screenshot` | スクリーンショット |
+| `setSliderValue` | Slider を値に置く（2.3.0〜、下の「Slider」） |
 
 ## 対応アサーション
 
@@ -225,6 +226,29 @@ JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングさ�
 | `text` | テキスト検証 |
 | `count` | 要素数検証 |
 | `state` | ViewModel状態検証 |
+| `value` | Slider の値の検証（2.3.0〜、下の「Slider」） |
+
+### Slider（`setSliderValue`・`value`、2.3.0）
+
+XCUITest には Slider の値を置く手段が無い。SwiftUI の Slider は指でしか動かない。そこで `setSliderValue` は、指と同じようにつまみを引いて値に置く（測った値は 2026-11-09、Xcode 27.2、iOS 27.2、iPhone 17）。
+
+- `adjust(toNormalizedSliderPosition:)` は使わない。1〜10 で最大 0.73、0〜100 で 5.5 ずれ、ずれの分を足し引きして打ち直すと発散した。
+- 引く時は、つまみの上から押し始め、約 10pt の取りこぼしを足した所まで引く。60pt より短い移動は、一度 60pt 離れてから戻る。端（min・max）は枠の外まで引いて、Slider に止めさせる。
+- 置けた値は、許容に入れば成功。許容は `step` があれば step/2、無ければ範囲の 0.5%。測った誤差は範囲の 0.1% 以下だった（1〜10 で 0.006）。値の移動は 3 回まで。
+- 置けた値は、成功でも失敗でもケースの warnings に残る（「setSliderValue 'id': landed at 9.003 (value 9, tolerance 0.5, 1 drag)」）。
+- 範囲は accessibility からは読めない。`range` を書く。書かなければ、つまみを両端まで動かして読む（アプリにはその値が届く）。0〜1 と 0〜100 の Slider は値を「37%」で見せるので、端からは範囲が分からない。この時は `range` が要る。
+- 範囲外の値や、`step` の刻みから外れる値は、つまみを動かす前に失敗する。文は Android・Web と同じで、端の値や近い 2 つの値を名指しする。
+
+`value` は accessibility value を読む（「9.003」「1,000」、または「37%」を `range` で換算）。既定の許容は `tolerance`、無ければ step/2、無ければ範囲の 0.5% の順で決まる。このどれも無い時は失敗して、`range`・`step`・`tolerance` を書くよう求める。アプリが持つ（送る）値をちょうどで見るなら、bound の data を `state` で検証する。`readText` は今までどおり accessibility value の字を読む。
+
+端末の腕は `DeviceProbe/` にある。SwiftUI の Slider の試験アプリと UITest で、xcodeproj は生成するので追跡していない。
+
+```bash
+ruby DeviceProbe/scripts/generate_project.rb
+xcodebuild test -project DeviceProbe/DeviceProbe.xcodeproj -scheme DeviceProbe \
+  -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath DeviceProbe/build/dd
+rm -rf DeviceProbe/build   # DerivedData と xcresult は使ったら消す
+```
 
 ### `screen` の残り（2.1.2）
 

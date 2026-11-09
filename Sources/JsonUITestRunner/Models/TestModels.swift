@@ -233,7 +233,8 @@ public struct FlowTestStep: Codable {
     public let id: String?
     public let ids: [String]?
     public let text: String?
-    public let value: String?
+    /// A string, or a number written as one (setSliderValue: `"value": 9`) — NumberOrString
+    @NumberOrString public var value: String?
     public let direction: String?
     public let duration: Int?
     public let timeout: Int?
@@ -267,6 +268,12 @@ public struct FlowTestStep: Codable {
     public let mocks: [String: String]?
     /// Target orientation for the setOrientation action (portrait|landscape)
     public let orientation: String?
+    /// setSliderValue / the value assertion: [minimum, maximum] as the layout declares it
+    public let range: [Double]?
+    /// setSliderValue / the value assertion: the slider's step (the grid min + k * step)
+    public let step: Double?
+    /// The value assertion: the largest accepted difference
+    public let tolerance: Double?
 
     // For file reference steps
     public let file: String?
@@ -311,7 +318,8 @@ public struct TestStep: Codable {
     public let id: String?
     public let ids: [String]?
     public let text: String?
-    public let value: String?
+    /// A string, or a number written as one (setSliderValue: `"value": 9`) — NumberOrString
+    @NumberOrString public var value: String?
     public let direction: String?
     public let duration: Int?
     public let timeout: Int?
@@ -347,6 +355,12 @@ public struct TestStep: Codable {
     public let mocks: [String: String]?
     /// Target orientation for the setOrientation action (portrait|landscape)
     public let orientation: String?
+    /// setSliderValue / the value assertion: [minimum, maximum] as the layout declares it
+    public let range: [Double]?
+    /// setSliderValue / the value assertion: the slider's step (the grid min + k * step)
+    public let step: Double?
+    /// The value assertion: the largest accepted difference
+    public let tolerance: Double?
 
     public init(
         action: String? = nil,
@@ -383,14 +397,17 @@ public struct TestStep: Codable {
         threshold: Double? = nil,
         mocks: [String: String]? = nil,
         orientation: String? = nil,
-        within: String? = nil
+        within: String? = nil,
+        range: [Double]? = nil,
+        step: Double? = nil,
+        tolerance: Double? = nil
     ) {
         self.action = action
         self.assert = assert
         self.id = id
         self.ids = ids
         self.text = text
-        self.value = value
+        self._value = NumberOrString(wrappedValue: value)
         self.direction = direction
         self.duration = duration
         self.timeout = timeout
@@ -420,6 +437,9 @@ public struct TestStep: Codable {
         self.mocks = mocks
         self.orientation = orientation
         self.within = within
+        self.range = range
+        self.step = step
+        self.tolerance = tolerance
     }
 
     public var isAction: Bool {
@@ -575,5 +595,56 @@ public struct AnyCodable: Codable {
 
     public var stringValue: String? {
         value as? String
+    }
+}
+
+// MARK: - A string written as a string or a number
+
+/// A step's `value` is text for every action but setSliderValue, which takes a
+/// number (`"value": 9`). Decoded as text either way — a number keeps the
+/// spelling a test author gives it ("9", "9.5") — so the actions that type text
+/// read it as they always have, and a synthesized decoder does not reject the
+/// whole file on a number where a string was expected.
+@propertyWrapper
+public struct NumberOrString: Codable {
+    public var wrappedValue: String?
+
+    public init(wrappedValue: String?) {
+        self.wrappedValue = wrappedValue
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            wrappedValue = nil
+        } else if let text = try? container.decode(String.self) {
+            wrappedValue = text
+        } else if let int = try? container.decode(Int.self) {
+            wrappedValue = String(int)
+        } else if let double = try? container.decode(Double.self) {
+            wrappedValue = SliderPlan.format(double)
+        } else {
+            throw DecodingError.typeMismatch(String.self, .init(codingPath: decoder.codingPath,
+                debugDescription: "value must be a string or a number"))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(wrappedValue)
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// An absent `value` is nil, as it was when the property was a plain `String?`.
+    public func decode(_ type: NumberOrString.Type, forKey key: Key) throws -> NumberOrString {
+        try decodeIfPresent(type, forKey: key) ?? NumberOrString(wrappedValue: nil)
+    }
+}
+
+extension KeyedEncodingContainer {
+    /// A nil `value` is left out, as it was when the property was a plain `String?`.
+    public mutating func encode(_ value: NumberOrString, forKey key: Key) throws {
+        if let text = value.wrappedValue { try encode(text, forKey: key) }
     }
 }

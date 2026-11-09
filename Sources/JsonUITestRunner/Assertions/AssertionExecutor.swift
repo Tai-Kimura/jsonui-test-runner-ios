@@ -144,6 +144,8 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
             try assertText(step: step, timeout: timeout, in: app)
         case "count":
             try assertCount(step: step, timeout: timeout, in: app)
+        case "value":
+            try assertValue(step: step, timeout: timeout, in: app)
         case "state":
             try assertState(step: step, timeout: timeout, in: app)
         case "screenshot":
@@ -434,6 +436,53 @@ public class XCUITestAssertionExecutor: AssertionExecutor {
         } onTimeout: { reason in
             let expected = step.equals?.stringValue.map { "equals '\($0)'" } ?? "contains '\(step.contains ?? "")'"
             return AssertionError.assertionFailed(assertion: "text", expected: expected, actual: "\(reason) for '\(id)'")
+        }
+    }
+
+    /// A slider's value from its accessibility value ("9.003", or "37%" for a
+    /// 0...1 / 0...100 slider, converted with `range`). The tolerance is
+    /// `tolerance`, else half of `step`, else 0.5% of `range`: an iOS slider
+    /// is placed by a drag and reads back with three decimals, so a default
+    /// needs one of them.
+    private func assertValue(step: TestStep, timeout: TimeInterval, in app: XCUIApplication) throws {
+        guard let id = step.id else {
+            throw AssertionError.missingParameter(assertion: "value", parameter: "id")
+        }
+        guard let expected = step.equals?.doubleValue ?? step.equals?.intValue.map(Double.init) else {
+            throw AssertionError.missingParameter(assertion: "value", parameter: "equals (a number)")
+        }
+        let range = step.range.flatMap { $0.count == 2 ? ($0[0], $0[1]) : nil }
+        let tolerance: Double
+        if let t = step.tolerance {
+            tolerance = t
+        } else if let s = step.step, s > 0 {
+            tolerance = s / 2
+        } else if let bounds = range {
+            tolerance = SliderPlan.tolerance(min: bounds.0, max: bounds.1, step: nil)
+        } else {
+            throw AssertionError.missingParameter(assertion: "value",
+                parameter: "range, step or tolerance (iOS reads a slider placed by a drag, to three decimals)")
+        }
+        var missing = "does not exist"
+        try pollUntil(timeout: timeout) {
+            let look = ElementScope.look(id: id, within: step.within, in: app)
+            guard case .found(let element) = look else {
+                missing = ElementScope.reason(look, id: id, within: step.within) ?? "does not exist"
+                return missing
+            }
+            let typed = ElementScope.query(id: id, within: step.within, type: .slider, in: app).firstMatch
+            let slider = typed.exists ? typed : element
+            guard let snapshot = try? slider.snapshot() else { return "does not exist" }
+            let shown = (snapshot.value as? String) ?? ""
+            guard let reading = SliderPlan.parse(shown) else { return "'\(id)' has no number to read ('\(shown)')" }
+            guard let actual = SliderPlan.value(of: reading, min: range?.0, max: range?.1) else {
+                return "'\(id)' reads \(shown), a percentage: give range to read it"
+            }
+            return abs(actual - expected) <= tolerance ? nil : "the slider '\(id)' is at \(SliderPlan.format(actual))"
+        } onTimeout: { reason in
+            AssertionError.assertionFailed(assertion: "value",
+                expected: "value \(SliderPlan.format(expected)) (tolerance \(SliderPlan.format(tolerance)))",
+                actual: reason)
         }
     }
 
@@ -747,7 +796,10 @@ extension FlowTestStep {
             threshold: threshold,
             mocks: mocks,
             orientation: orientation,
-            within: within
+            within: within,
+            range: range,
+            step: step,
+            tolerance: tolerance
         )
     }
 }
