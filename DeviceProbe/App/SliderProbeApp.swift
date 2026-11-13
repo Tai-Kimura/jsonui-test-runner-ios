@@ -57,6 +57,8 @@ struct SliderProbeApp: App {
         WindowGroup {
             if probe == "reorder" {
                 ReorderProbeView()
+            } else if probe == "libreorder" || probe == "libreorderhandle" {
+                LibraryReorderProbeView(usesHandle: probe == "libreorderhandle")
             } else {
                 VStack(spacing: 14) {
                     ForEach(sliderSpecs) { SliderRow(spec: $0) }

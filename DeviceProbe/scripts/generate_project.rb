@@ -30,6 +30,18 @@ product = project.new(Xcodeproj::Project::Object::XCSwiftPackageProductDependenc
 product.product_name = 'JsonUITestRunner'
 tests.package_product_dependencies << product
 
+# SWIFTJSONUI_PATH: a SwiftJsonUI checkout with CollectionReorder links the library into the app, for
+# LibraryReorderProbeView (MoveItemLibraryOnDeviceTests). Without it the screen says it is not linked and those tests
+# skip; the driver itself never depends on SwiftJsonUI.
+if (sjui = ENV['SWIFTJSONUI_PATH']) && !sjui.empty?
+  sjui_package = project.new(Xcodeproj::Project::Object::XCLocalSwiftPackageReference)
+  sjui_package.relative_path = File.expand_path(sjui)
+  project.root_object.package_references << sjui_package
+  sjui_product = project.new(Xcodeproj::Project::Object::XCSwiftPackageProductDependency)
+  sjui_product.product_name = 'SwiftJsonUI'
+  app.package_product_dependencies << sjui_product
+end
+
 project.targets.each do |t|
   t.build_configurations.each do |c|
     b = c.build_settings
