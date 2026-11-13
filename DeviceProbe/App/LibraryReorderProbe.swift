@@ -30,7 +30,9 @@ private struct LibraryReorderRows: View {
     private var locked: Set<Int> { usesHandle ? Set(rows.indices.filter { rows[$0] == "R2" }) : [] }
 
     var body: some View {
-        let reorder = CollectionReorder(isEnabled: true, usesHandle: usesHandle) { _, from, to in
+        // hasLockedRows: a Collection with reorderLockedProperty drags as the library does on iOS 27 too (the generated
+        // code passes it; SwiftJsonUI 228b7e0)
+        let reorder = CollectionReorder(isEnabled: true, usesHandle: usesHandle, hasLockedRows: !locked.isEmpty) { _, from, to in
             rows.insert(rows.remove(at: from), at: to)
             moves.append("\(from)>\(to)")
         }
