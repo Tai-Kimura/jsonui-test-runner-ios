@@ -45,6 +45,25 @@ final class MoveItemLibraryOnDeviceTests: XCTestCase {
         XCTAssertTrue(label("order").hasPrefix("R1,R0,R2"), label("order"))
     }
 
+    /// The weak spot: the header above row 0 is cut off (scrolled a little), row 0 is wholly visible, so iOS takes the
+    /// list as at its top and lets the press near it. Should the list scroll during the drag, the step must fail saying
+    /// so; it must never leave the row somewhere else in silence.
+    func testWithTheHeaderCutOffTheMoveLandsOrFailsSayingTheListScrolled() throws {
+        try launch("libreorder")
+        let scroll = app.scrollViews.firstMatch
+        let middle = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        middle.press(forDuration: 0.05, thenDragTo: middle.withOffset(CGVector(dx: 0, dy: -20)))
+        Thread.sleep(forTimeInterval: 0.5)
+        do {
+            try move(0, 2)
+            XCTAssertTrue(label("order").hasPrefix("R1,R2,R0"), "moved without failing, so it must have landed at 2: \(label("order"))")
+        } catch {
+            let said = error.localizedDescription
+            XCTAssertTrue(said.contains("scrolled during the drag") || said.contains("too near the top or bottom"), said)
+            if said.contains("scrolled during the drag") { print("HEADER-CUT: the list scrolled; the step said so: \(label("order"))") }
+        }
+    }
+
     func testALockedRowIsNotPassed() throws {
         try launch("libreorderhandle")
         // R2 is locked: R0 dragged onto R4 stops just before it

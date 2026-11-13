@@ -6,7 +6,12 @@ import SwiftUI
 /// "from>to" with `to` counted after the move (onMove's destination converted, as the libraries do), and the order
 /// under `order`, so a test reads what the app did, not only what is drawn.
 struct ReorderProbeView: View {
-    @State private var rows = (0..<12).map { "R\($0)" }
+    /// `-rows N` (default 12): a short list shows every row, so its last row is moved at its end
+    @State private var rows: [String] = {
+        let args = ProcessInfo.processInfo.arguments
+        let n = args.firstIndex(of: "-rows").flatMap { i in i + 1 < args.count ? Int(args[i + 1]) : nil } ?? 12
+        return (0..<n).map { "R\($0)" }
+    }()
     @State private var moves: [String] = []
 
     var body: some View {

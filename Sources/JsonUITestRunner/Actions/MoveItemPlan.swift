@@ -20,6 +20,9 @@ public enum MoveItemPlan {
     /// release 129 pt above the window's bottom landed on `to`, one 55 pt above it two rows further (the vectors'
     /// edgeMargin).
     public static let edgeMargin: CGFloat = 100
+    /// ... and nearer the top or bottom of its list's visible part than this: the libraries' auto-scroll band is 48
+    /// from the list's edges (+ 8), so a short list in the middle of the screen scrolls far from the screen's edges.
+    public static let listMargin: CGFloat = 56
 
     public enum Outcome: Equatable {
         case gesture(press: CGPoint, release: CGPoint)
@@ -29,9 +32,12 @@ public enum MoveItemPlan {
     /// `rows`: address -> the frames found for it (none: not drawn; two or more: the address repeats).
     /// `handle`: nil when the step gives no handle; .some(nil) when it gives one and none was found in the from row.
     public static func plan(id: String, from: Int, to: Int, section: Int = 0, viewport: CGRect,
-                            rows: [String: [CGRect]], handle: CGRect?? = nil) -> Outcome {
+                            rows: [String: [CGRect]], handle: CGRect?? = nil, list: CGRect? = nil,
+                            canScrollUp: Bool = true, canScrollDown: Bool = true) -> Outcome {
         if from == to { return .fail("same") }
         if section != 0 { return .fail("section") }
+        // the list's visible part: list ∩ viewport (the viewport without a list)
+        let visible = list.map { $0.intersection(viewport) } ?? viewport
         func row(_ n: Int) -> Result<CGRect, Failure> {
             let address = "\(id)_item_\(n)"
             let found = rows[address] ?? []
@@ -39,6 +45,10 @@ public enum MoveItemPlan {
             guard let frame = found.first else { return .failure(Failure("missing:\(address)")) }
             if frame.minX < viewport.minX || frame.minY < viewport.minY
                 || frame.maxX > viewport.maxX || frame.maxY > viewport.maxY {
+                return .failure(Failure("offscreen:\(address)"))
+            }
+            if list != nil && (frame.minX < visible.minX || frame.minY < visible.minY
+                               || frame.maxX > visible.maxX || frame.maxY > visible.maxY) {
                 return .failure(Failure("offscreen:\(address)"))
             }
             return .success(frame)
@@ -53,10 +63,28 @@ public enum MoveItemPlan {
         case .some(.some(let grip)): press = CGPoint(x: grip.midX, y: grip.midY)
         }
         let release = CGPoint(x: press.x, y: toRow.minY + toRow.height * (to > from ? 0.75 : 0.25))
-        func near(_ y: CGFloat) -> Bool { y - viewport.minY < edgeMargin || viewport.maxY - y < edgeMargin }
+        // the edge rule holds only on a side the list can still scroll towards (a list at its top keeps still)
+        func near(_ y: CGFloat) -> Bool {
+            (canScrollUp && (y - viewport.minY < edgeMargin || (list != nil && y - visible.minY < listMargin)))
+                || (canScrollDown && (viewport.maxY - y < edgeMargin || (list != nil && visible.maxY - y < listMargin)))
+        }
         if near(press.y) { return .fail("edge:\(id)_item_\(from)") }
         if near(release.y) { return .fail("edge:\(id)_item_\(to)") }
         return .gesture(press: press, release: release)
+    }
+
+    /// After the gesture: a row outside the moved range keeps its index and its place through a reorder; if it moved
+    /// (more than 1), the list scrolled under the finger and the row may have landed elsewhere (the vectors' verify).
+    /// iOS reads no list offset and judges canScrollUp / canScrollDown from the rows, missing a cut-off header or footer:
+    /// this check is what keeps that weak spot from landing a row elsewhere in silence.
+    public static func scrolled(before: CGRect, after: CGRect) -> CGFloat? {
+        let moved = max(abs(before.minX - after.minX), abs(before.minY - after.minY),
+                        abs(before.width - after.width), abs(before.height - after.height))
+        return moved > 1 ? moved : nil
+    }
+
+    public static func scrolledSentence(_ address: String, moved: CGFloat) -> String {
+        "moveItem: the list scrolled during the drag ('\(address)' moved by \(Int(moved.rounded()))); the row may have landed elsewhere — scroll the rows away from the list's edges first"
     }
 
     struct Failure: Error {
@@ -77,7 +105,7 @@ public enum MoveItemPlan {
         case "offscreen":
             return "moveItem: '\(address)' is not on screen (scroll it into view first, e.g. scrollUntilVisible; the drag does not scroll)"
         case "edge":
-            return "moveItem: '\(address)' is too near the screen's top or bottom (within \(Int(edgeMargin)): a list scrolls by itself there under a held finger); scroll it towards the middle first"
+            return "moveItem: '\(address)' is too near the top or bottom of the screen (\(Int(edgeMargin))) or of its list (\(Int(listMargin))): the list scrolls by itself there under a held finger; scroll it towards the middle first"
         case "no-handle": return "moveItem: the handle '\(handle ?? "")' was not found inside the row (from \(from))"
         default: return "moveItem: \(reason)"
         }

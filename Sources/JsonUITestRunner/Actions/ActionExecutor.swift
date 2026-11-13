@@ -1760,8 +1760,43 @@ public class XCUITestActionExecutor: ActionExecutor {
         }
         let window = app.windows.firstMatch
         let viewport = window.exists ? window.frame : app.frame
+        // the list that scrolls the rows: the smallest scroll view / table / collection view holding the from row
+        var list: CGRect?
+        if let fromFrame = rows["\(id)_item_\(from)"], fromFrame.count == 1 {
+            let centre = CGPoint(x: fromFrame[0].midX, y: fromFrame[0].midY)
+            let types: [XCUIElement.ElementType] = [.scrollView, .table, .collectionView]
+            for type in types {
+                for element in app.descendants(matching: type).allElementsBoundByIndex where element.exists {
+                    let frame = element.frame
+                    if frame.contains(centre), list.map({ frame.width * frame.height < $0.width * $0.height }) ?? true {
+                        list = frame
+                    }
+                }
+            }
+        }
+        // iOS reads no list offset: up is scrollable unless row 0 is wholly in the list's visible part; down unless the
+        // last row found (counting up from the step's rows) is. A cut-off header or footer is not seen (the weak spot,
+        // caught after the gesture by the reference row below).
+        let visible = list.map { $0.intersection(viewport) } ?? viewport
+        let element = { (n: Int) in app.descendants(matching: .any).matching(identifier: "\(id)_item_\(n)").firstMatch }
+        let wholly = { (n: Int) -> Bool in
+            let e = element(n)
+            return e.exists && visible.contains(e.frame)
+        }
+        let canScrollUp = !wholly(0)
+        var last = max(from, to)
+        while last < max(from, to) + 200 && element(last + 1).exists { last += 1 }
+        let canScrollDown = !wholly(last)
+        // a row outside the moved range, wholly on screen: it must be where it was after the gesture
+        let (lo, hi) = (min(from, to), max(from, to))
+        var reference: (address: String, frame: CGRect)?
+        for n in [lo - 1, hi + 1, lo - 2, hi + 2] where n >= 0 && wholly(n) {
+            reference = ("\(id)_item_\(n)", element(n).frame)
+            break
+        }
         switch MoveItemPlan.plan(id: id, from: from, to: to, section: step.section ?? 0, viewport: viewport,
-                                 rows: rows, handle: handle) {
+                                 rows: rows, handle: handle, list: list,
+                                 canScrollUp: canScrollUp, canScrollDown: canScrollDown) {
         case .fail(let reason):
             throw fail(reason)
         case .gesture(let press, let release):
@@ -1770,6 +1805,14 @@ public class XCUITestActionExecutor: ActionExecutor {
             let end = origin.withOffset(CGVector(dx: release.x, dy: release.y))
             start.press(forDuration: MoveItemPlan.pressSeconds, thenDragTo: end, withVelocity: .slow,
                         thenHoldForDuration: MoveItemPlan.holdSeconds)
+            if let reference {
+                Thread.sleep(forTimeInterval: 0.3)
+                let now = app.descendants(matching: .any).matching(identifier: reference.address).firstMatch
+                if now.exists, let moved = MoveItemPlan.scrolled(before: reference.frame, after: now.frame) {
+                    throw ActionError.actionFailed(action: "moveItem",
+                                                   reason: MoveItemPlan.scrolledSentence(reference.address, moved: moved))
+                }
+            }
         }
     }
 

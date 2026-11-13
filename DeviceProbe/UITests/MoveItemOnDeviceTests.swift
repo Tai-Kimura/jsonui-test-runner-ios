@@ -42,12 +42,26 @@ final class MoveItemOnDeviceTests: XCTestCase {
         let onScreen = (0..<12).filter { element($0).exists && window.contains(row($0)) }   // a List draws lazily
         let near = try XCTUnwrap(onScreen.last)
         XCTAssertThrowsError(try move(1, near)) { error in
-            XCTAssertTrue(error.localizedDescription.contains("too near the screen's top or bottom"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("is too near the top or bottom of the screen"), error.localizedDescription)
         }
         XCTAssertEqual(label("moves"), "")
         let clear = try XCTUnwrap(onScreen.last { window.maxY - (row($0).minY + row($0).height * 0.75) >= MoveItemPlan.edgeMargin })
         try move(1, clear)
         XCTAssertEqual(label("moves"), "1>\(clear)")
+    }
+
+    /// Row 0 of a list at its top, and the last row of a list at its end, move: nothing scrolls that way, so their
+    /// nearness to the edges does not count (only a side the list can still scroll towards does).
+    func testTheFirstAndTheLastRowOfAListAtItsEndsMove() throws {
+        app.terminate()
+        app.launchArguments = ["-probe", "reorder", "-rows", "6"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["list_item_5"].waitForExistence(timeout: 10))
+        try move(0, 2)
+        XCTAssertEqual(label("moves"), "0>2")
+        try move(3, 5)
+        XCTAssertEqual(label("moves"), "0>2 3>5")
+        XCTAssertEqual(label("order"), "R1,R2,R0,R4,R5,R3")
     }
 
     func testARefusedStepMovesNothing() {

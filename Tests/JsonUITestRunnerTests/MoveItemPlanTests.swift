@@ -18,13 +18,25 @@ final class MoveItemPlanTests: XCTestCase {
         XCTAssertEqual(timing["pressSeconds"], MoveItemPlan.pressSeconds)
         XCTAssertEqual(timing["holdSeconds"], MoveItemPlan.holdSeconds)
         XCTAssertEqual(vector["edgeMargin"] as? Double, Double(MoveItemPlan.edgeMargin))
+        XCTAssertEqual(vector["listMargin"] as? Double, Double(MoveItemPlan.listMargin))
+    }
+
+    func testVerify() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "move-item", withExtension: "json", subdirectory: "Fixtures"))
+        let vector = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let cases = try XCTUnwrap(vector["verify"] as? [[String: Any]])
+        XCTAssertEqual(cases.count, 4)
+        for w in cases {
+            let got = MoveItemPlan.scrolled(before: try XCTUnwrap(rect(w["before"])), after: try XCTUnwrap(rect(w["after"])))
+            XCTAssertEqual(got != nil, w["scrolled"] as? Bool, w["name"] as? String ?? "?")
+        }
     }
 
     func testEveryCase() throws {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "move-item", withExtension: "json", subdirectory: "Fixtures"))
         let vector = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let cases = try XCTUnwrap(vector["cases"] as? [[String: Any]])
-        XCTAssertEqual(cases.count, 16)
+        XCTAssertEqual(cases.count, 25)
         for c in cases {
             let name = c["name"] as? String ?? "?"
             var rows: [String: [CGRect]] = [:]
@@ -34,7 +46,10 @@ final class MoveItemPlanTests: XCTestCase {
             let handle: CGRect?? = c.keys.contains("handle") ? .some(rect(c["handle"])) : .none
             let got = MoveItemPlan.plan(id: "list", from: c["from"] as! Int, to: c["to"] as! Int,
                                         section: c["section"] as? Int ?? 0,
-                                        viewport: try XCTUnwrap(rect(c["viewport"])), rows: rows, handle: handle)
+                                        viewport: try XCTUnwrap(rect(c["viewport"])), rows: rows, handle: handle,
+                                        list: rect(c["list"]),
+                                        canScrollUp: c["canScrollUp"] as? Bool ?? true,
+                                        canScrollDown: c["canScrollDown"] as? Bool ?? true)
             if let fail = c["fail"] as? String {
                 XCTAssertEqual(got, .fail(fail), name)
             } else {
