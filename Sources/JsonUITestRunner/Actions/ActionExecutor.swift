@@ -1749,7 +1749,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             // waited for within the step's timeout; one still absent is named by the plan
             _ = ElementScope.wait(id: address, within: step.within, timeout: max(deadline.timeIntervalSinceNow, 0), in: app)
             let scope: XCUIElement = step.within.map { ElementScope.container($0, in: app) } ?? app
-            let found = scope.descendants(matching: .any).matching(identifier: address).allElementsBoundByIndex
+            let found = allElements(scope.descendants(matching: .any).matching(identifier: address))
             rows[address] = found.filter { $0.exists }.map { $0.frame }
         }
         var handle: CGRect?? = nil
@@ -1766,7 +1766,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             let centre = CGPoint(x: fromFrame[0].midX, y: fromFrame[0].midY)
             let types: [XCUIElement.ElementType] = [.scrollView, .table, .collectionView]
             for type in types {
-                for element in app.descendants(matching: type).allElementsBoundByIndex where element.exists {
+                for element in allElements(app.descendants(matching: type)) where element.exists {
                     let frame = element.frame
                     if frame.contains(centre), list.map({ frame.width * frame.height < $0.width * $0.height }) ?? true {
                         list = frame
