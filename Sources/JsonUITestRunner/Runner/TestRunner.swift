@@ -1159,7 +1159,11 @@ public class JsonUITestRunner {
             threshold: step.threshold,
             mocks: step.mocks,
             orientation: step.orientation,
-            within: substituteArgsInOptionalString(step.within, args: args)
+            within: substituteArgsInOptionalString(step.within, args: args),
+            from: step.from,
+            to: step.to,
+            section: step.section,
+            handle: substituteArgsInOptionalString(step.handle, args: args)
         )
     }
 

@@ -214,6 +214,7 @@ JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングさ�
 | `back` | 戻る |
 | `screenshot` | スクリーンショット |
 | `setSliderValue` | Slider を値に置く（2.3.0〜、下の「Slider」） |
+| `moveItem` | 並べ替えられる Collection の行を長押しでつかみ、ドラッグで並べ替える（2.4.0〜、下の「行の並べ替え」） |
 
 ## 対応アサーション
 
@@ -227,6 +228,19 @@ JsonUIの `id` 属性が `accessibilityIdentifier` としてマッピングさ�
 | `count` | 要素数検証 |
 | `state` | ViewModel状態検証 |
 | `value` | Slider の値の検証（2.3.0〜、下の「Slider」） |
+
+### 行の並べ替え（`moveItem`、2.4.0）
+
+```json
+{ "action": "moveItem", "id": "stops", "from": 0, "to": 2 }
+{ "action": "moveItem", "id": "stops", "from": 3, "to": 0, "handle": "grip" }
+```
+
+- 指と同じ手の動きで行を動かす。行 `<id>_item_<from>`（`handle` があれば、その行の中の、その id の要素）を 1.0 秒押し、ゆっくり（`.slow`）`<id>_item_<to>` まで動かし、0.5 秒止めてから離す（`press(forDuration:thenDragTo:withVelocity:thenHoldForDuration:)`）。
+- 離す所は、下へ動かす時は to の行の 3/4、上へは 1/4 の高さ。中央では離さない（iOS 27 の reorderContainer は中央ちょうどを越えた側に数え、ライブラリの規則は越えていない側に数える）。行の無い所で離すと、iOS 27 の reorderContainer は取り消すので、必ず行の上で離す。
+- 2 つの行が画面にあり、押す所と離す所が画面の上下の端から 100pt 以上離れている事。近いと、指を止めている間に List が自分で scroll し、行が to より先に着く（iOS 27.2・iPhone 17 の List と onMove で測った: 窓の下から 129pt で離すと to に着き、55pt では 2 つ先に着いた）。満たさない時は、何も動かさずに、行を名指して失敗する。from と to が同じ、section が 0 以外、同じ住所の要素が 2 つ以上（section が複数）、handle が見つからない時も同じ。
+- 押す所と離す所の決め方は jsonui-test-runner の `specs/vectors/move-item.json`（`Tests/JsonUITestRunnerTests/Fixtures`）。端末の腕は `DeviceProbe` の `MoveItemOnDeviceTests`（SwiftUI の List と onMove、iOS 27.2 と 18.6 で通った）。
+- この手順は行を動かすだけ。並びの結果は、続く手順で行の文字か、アプリの state で確かめる。
 
 ### Slider（`setSliderValue`・`value`、2.3.0）
 

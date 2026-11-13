@@ -141,6 +141,8 @@ public class XCUITestActionExecutor: ActionExecutor {
             try executeSelectOption(step: step, in: app)
         case "tapItem":
             try executeTapItem(step: step, in: app)
+        case "moveItem":
+            try executeMoveItem(step: step, in: app)
         case "selectTab":
             try executeSelectTab(step: step, in: app)
         case "readText":
@@ -1716,6 +1718,59 @@ public class XCUITestActionExecutor: ActionExecutor {
 
         bringClearOfNavigationBar(element, id: itemId, action: "tapItem", in: app)
         element.tap()
+    }
+
+    /// moveItem (schemas moveItemAction): a reorderable Collection's row pressed 1.0 s (on its handle when the step
+    /// gives one), dragged slowly, held 0.5 s and released over the to row (MoveItemPlan, by the shared vectors).
+    /// Nothing moves when the plan fails; the failure names the row.
+    private func executeMoveItem(step: TestStep, in app: XCUIApplication) throws {
+        guard let id = step.id else {
+            throw ActionError.missingParameter(action: "moveItem", parameter: "id")
+        }
+        guard let from = step.from else {
+            throw ActionError.missingParameter(action: "moveItem", parameter: "from")
+        }
+        guard let to = step.to else {
+            throw ActionError.missingParameter(action: "moveItem", parameter: "to")
+        }
+        let fail = { (reason: String) -> ActionError in
+            .actionFailed(action: "moveItem", reason: MoveItemPlan.sentence(reason, from: from, handle: step.handle))
+        }
+        if case .fail(let reason) = MoveItemPlan.plan(id: id, from: from, to: to, section: step.section ?? 0,
+                                                       viewport: .zero, rows: [:]),
+           reason == "same" || reason == "section" {
+            throw fail(reason)
+        }
+        let timeout = TimeInterval(step.timeout ?? 5000) / 1000.0
+        let deadline = Date().addingTimeInterval(timeout)
+        var rows: [String: [CGRect]] = [:]
+        for n in [from, to] {
+            let address = "\(id)_item_\(n)"
+            // waited for within the step's timeout; one still absent is named by the plan
+            _ = ElementScope.wait(id: address, within: step.within, timeout: max(deadline.timeIntervalSinceNow, 0), in: app)
+            let scope: XCUIElement = step.within.map { ElementScope.container($0, in: app) } ?? app
+            let found = scope.descendants(matching: .any).matching(identifier: address).allElementsBoundByIndex
+            rows[address] = found.filter { $0.exists }.map { $0.frame }
+        }
+        var handle: CGRect?? = nil
+        if let grip = step.handle {
+            let row = app.descendants(matching: .any).matching(identifier: "\(id)_item_\(from)").firstMatch
+            let element = row.descendants(matching: .any).matching(identifier: grip).firstMatch
+            handle = .some(element.exists ? element.frame : nil)
+        }
+        let window = app.windows.firstMatch
+        let viewport = window.exists ? window.frame : app.frame
+        switch MoveItemPlan.plan(id: id, from: from, to: to, section: step.section ?? 0, viewport: viewport,
+                                 rows: rows, handle: handle) {
+        case .fail(let reason):
+            throw fail(reason)
+        case .gesture(let press, let release):
+            let origin = app.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            let start = origin.withOffset(CGVector(dx: press.x, dy: press.y))
+            let end = origin.withOffset(CGVector(dx: release.x, dy: release.y))
+            start.press(forDuration: MoveItemPlan.pressSeconds, thenDragTo: end, withVelocity: .slow,
+                        thenHoldForDuration: MoveItemPlan.holdSeconds)
+        }
     }
 
     private func executeSelectTab(step: TestStep, in app: XCUIApplication) throws {

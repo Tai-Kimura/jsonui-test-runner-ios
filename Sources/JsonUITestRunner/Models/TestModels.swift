@@ -247,6 +247,12 @@ public struct FlowTestStep: Codable {
     public let button: String?
     public let label: String?
     public let index: Int?
+    /// moveItem: the row picked up and its index after the move (0-based, within section 0)
+    public let from: Int?
+    public let to: Int?
+    public let section: Int?
+    /// moveItem: the Collection's reorderHandle id, pressed inside the from row
+    public let handle: String?
 
     // Advanced feature fields (common step attributes + new actions)
     public let optional: Bool?
@@ -332,6 +338,12 @@ public struct TestStep: Codable {
     public let button: String?
     public let label: String?
     public let index: Int?
+    /// moveItem: the row picked up and its index after the move (0-based, within section 0)
+    public let from: Int?
+    public let to: Int?
+    public let section: Int?
+    /// moveItem: the Collection's reorderHandle id, pressed inside the from row
+    public let handle: String?
 
     // Advanced feature fields (common step attributes + new actions)
     public let optional: Bool?
@@ -400,7 +412,11 @@ public struct TestStep: Codable {
         within: String? = nil,
         range: [Double]? = nil,
         step: Double? = nil,
-        tolerance: Double? = nil
+        tolerance: Double? = nil,
+        from: Int? = nil,
+        to: Int? = nil,
+        section: Int? = nil,
+        handle: String? = nil
     ) {
         self.action = action
         self.assert = assert
@@ -440,6 +456,10 @@ public struct TestStep: Codable {
         self.range = range
         self.step = step
         self.tolerance = tolerance
+        self.from = from
+        self.to = to
+        self.section = section
+        self.handle = handle
     }
 
     public var isAction: Bool {

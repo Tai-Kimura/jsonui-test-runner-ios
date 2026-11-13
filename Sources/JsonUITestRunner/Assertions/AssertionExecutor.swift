@@ -799,7 +799,11 @@ extension FlowTestStep {
             within: within,
             range: range,
             step: step,
-            tolerance: tolerance
+            tolerance: tolerance,
+            from: from,
+            to: to,
+            section: section,
+            handle: handle
         )
     }
 }

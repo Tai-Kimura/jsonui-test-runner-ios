@@ -46,12 +46,23 @@ struct SliderRow: View {
 
 @main
 struct SliderProbeApp: App {
+    /// `-probe reorder` launches the reorder screen (MoveItemOnDeviceTests); anything else the sliders.
+    private var probe: String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-probe"), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
     var body: some Scene {
         WindowGroup {
-            VStack(spacing: 14) {
-                ForEach(sliderSpecs) { SliderRow(spec: $0) }
+            if probe == "reorder" {
+                ReorderProbeView()
+            } else {
+                VStack(spacing: 14) {
+                    ForEach(sliderSpecs) { SliderRow(spec: $0) }
+                }
+                .padding(16)
             }
-            .padding(16)
         }
     }
 }
