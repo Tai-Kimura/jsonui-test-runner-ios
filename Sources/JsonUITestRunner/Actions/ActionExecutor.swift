@@ -1808,7 +1808,7 @@ public class XCUITestActionExecutor: ActionExecutor {
             if let reference {
                 Thread.sleep(forTimeInterval: 0.3)
                 let now = app.descendants(matching: .any).matching(identifier: reference.address).firstMatch
-                if now.exists, let moved = MoveItemPlan.scrolled(before: reference.frame, after: now.frame) {
+                if let moved = MoveItemPlan.scrolled(before: reference.frame, after: now.exists ? now.frame : nil) {
                     throw ActionError.actionFailed(action: "moveItem",
                                                    reason: MoveItemPlan.scrolledSentence(reference.address, moved: moved))
                 }

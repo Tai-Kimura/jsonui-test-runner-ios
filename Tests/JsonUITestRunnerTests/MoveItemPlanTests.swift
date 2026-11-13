@@ -25,10 +25,13 @@ final class MoveItemPlanTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "move-item", withExtension: "json", subdirectory: "Fixtures"))
         let vector = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let cases = try XCTUnwrap(vector["verify"] as? [[String: Any]])
-        XCTAssertEqual(cases.count, 4)
+        XCTAssertEqual(cases.count, 5)
         for w in cases {
-            let got = MoveItemPlan.scrolled(before: try XCTUnwrap(rect(w["before"])), after: try XCTUnwrap(rect(w["after"])))
+            let got = MoveItemPlan.scrolled(before: try XCTUnwrap(rect(w["before"])), after: rect(w["after"]))
             XCTAssertEqual(got != nil, w["scrolled"] as? Bool, w["name"] as? String ?? "?")
+            if w["offScreen"] as? Bool == true, let got {
+                XCTAssertTrue(MoveItemPlan.scrolledSentence("list_item_1", moved: got).contains("('list_item_1' moved off the screen)"))
+            }
         }
     }
 

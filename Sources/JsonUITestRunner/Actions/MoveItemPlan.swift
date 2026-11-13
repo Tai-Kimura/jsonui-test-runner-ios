@@ -77,14 +77,16 @@ public enum MoveItemPlan {
     /// (more than 1), the list scrolled under the finger and the row may have landed elsewhere (the vectors' verify).
     /// iOS reads no list offset and judges canScrollUp / canScrollDown from the rows, missing a cut-off header or footer:
     /// this check is what keeps that weak spot from landing a row elsewhere in silence.
-    public static func scrolled(before: CGRect, after: CGRect) -> CGFloat? {
+    public static func scrolled(before: CGRect, after: CGRect?) -> CGFloat? {
+        guard let after else { return .infinity }   // no longer found: a lazy list scrolled it away
         let moved = max(abs(before.minX - after.minX), abs(before.minY - after.minY),
                         abs(before.width - after.width), abs(before.height - after.height))
         return moved > 1 ? moved : nil
     }
 
     public static func scrolledSentence(_ address: String, moved: CGFloat) -> String {
-        "moveItem: the list scrolled during the drag ('\(address)' moved by \(Int(moved.rounded()))); the row may have landed elsewhere — scroll the rows away from the list's edges first"
+        let how = moved.isFinite ? "moved by \(Int(moved.rounded()))" : "moved off the screen"
+        return "moveItem: the list scrolled during the drag ('\(address)' \(how)); the row may have landed elsewhere — scroll the rows away from the list's edges first"
     }
 
     struct Failure: Error {
