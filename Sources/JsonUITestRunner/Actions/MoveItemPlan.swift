@@ -76,11 +76,11 @@ public enum MoveItemPlan {
     /// After the gesture: a row outside the moved range keeps its index and its place through a reorder; if it moved
     /// (more than 1), the list scrolled under the finger and the row may have landed elsewhere (the vectors' verify).
     /// iOS reads no list offset and judges canScrollUp / canScrollDown from the rows, missing a cut-off header or footer:
-    /// this check is what keeps that weak spot from landing a row elsewhere in silence.
+    /// this check is what keeps that weak spot from landing a row elsewhere in silence. Only the top (y) is compared:
+    /// v1 reorders one vertical column, and a row's x or size can change while it settles without it moving.
     public static func scrolled(before: CGRect, after: CGRect?) -> CGFloat? {
         guard let after else { return .infinity }   // no longer found: a lazy list scrolled it away
-        let moved = max(abs(before.minX - after.minX), abs(before.minY - after.minY),
-                        abs(before.width - after.width), abs(before.height - after.height))
+        let moved = abs(before.minY - after.minY)
         return moved > 1 ? moved : nil
     }
 

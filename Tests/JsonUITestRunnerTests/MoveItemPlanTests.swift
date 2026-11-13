@@ -25,7 +25,7 @@ final class MoveItemPlanTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "move-item", withExtension: "json", subdirectory: "Fixtures"))
         let vector = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let cases = try XCTUnwrap(vector["verify"] as? [[String: Any]])
-        XCTAssertEqual(cases.count, 5)
+        XCTAssertEqual(cases.count, 7)
         for w in cases {
             let got = MoveItemPlan.scrolled(before: try XCTUnwrap(rect(w["before"])), after: rect(w["after"]))
             XCTAssertEqual(got != nil, w["scrolled"] as? Bool, w["name"] as? String ?? "?")
