@@ -7,8 +7,10 @@ import CoreGraphics
 /// (jsonui-test-runner schemas/actions.schema.json moveItemAction, specs/vectors/move-item.json — Fixtures).
 ///
 /// The press is the handle's centre when the step gives `handle`, else the from row's centre; the release is in the
-/// press's column, over the to row at 3/4 of its height going down and 1/4 going up — never on a centre, which the
-/// libraries' reorder rule (jsonui-cli shared/core/reorder_vectors.json) does not count as passed and iOS 27's own
+/// press's column, where the dragged row's centre lands over the to row at 3/4 of its height going down and 1/4 going
+/// up, plus the press's offset from the from row's centre (the rule reads the row's centre, not the finger: a row held
+/// by a handle off its centre is let go that much off). Never on an edge: the libraries' reorder rule (jsonui-cli
+/// shared/core/reorder_vectors.json) passes a row when the dragged centre goes beyond its edge, as iOS 27's own
 /// reorderContainer does. Released where there is no row, iOS 27's reorderContainer cancels the move, so the
 /// release is always over a row (support 1's measurement on iOS 18.6 / 26.5 / 27.2, 2026-11-13).
 public enum MoveItemPlan {
@@ -62,7 +64,9 @@ public enum MoveItemPlan {
         case .some(.none): return .fail("no-handle")
         case .some(.some(let grip)): press = CGPoint(x: grip.midX, y: grip.midY)
         }
-        let release = CGPoint(x: press.x, y: toRow.minY + toRow.height * (to > from ? 0.75 : 0.25))
+        // where the dragged row's centre lands, moved by where the finger holds the row (0 at its centre)
+        let grip = press.y - fromRow.midY
+        let release = CGPoint(x: press.x, y: toRow.minY + toRow.height * (to > from ? 0.75 : 0.25) + grip)
         // the edge rule holds only on a side the list can still scroll towards (a list at its top keeps still)
         func near(_ y: CGFloat) -> Bool {
             (canScrollUp && (y - viewport.minY < edgeMargin || (list != nil && y - visible.minY < listMargin)))

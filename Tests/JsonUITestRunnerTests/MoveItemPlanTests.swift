@@ -39,7 +39,7 @@ final class MoveItemPlanTests: XCTestCase {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "move-item", withExtension: "json", subdirectory: "Fixtures"))
         let vector = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let cases = try XCTUnwrap(vector["cases"] as? [[String: Any]])
-        XCTAssertEqual(cases.count, 25)
+        XCTAssertEqual(cases.count, 27)
         for c in cases {
             let name = c["name"] as? String ?? "?"
             var rows: [String: [CGRect]] = [:]
