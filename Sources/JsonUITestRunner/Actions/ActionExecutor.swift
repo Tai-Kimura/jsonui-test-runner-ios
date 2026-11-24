@@ -2013,11 +2013,24 @@ public class XCUITestActionExecutor: ActionExecutor {
         // wrapped labels where the proportional estimate below misses
         // (test-partialattributes-subrange-tap-misses-on-centered-matchparent-label).
         let link = element.links.matching(NSPredicate(format: "label == %@", targetText)).firstMatch
-        if link.exists, link.isHittable {
+        let hittableLink = link.exists && link.isHittable
+        // Next: a descendant named exactly by the text, which need not take the press itself (TextTapRouting).
+        let named = hittableLink ? nil
+            : element.descendants(matching: .any).matching(NSPredicate(format: "label == %@", targetText)).firstMatch
+        let namedFrame = (named?.exists ?? false) ? named?.frame : nil
+        switch TextTapRouting.route(fullText: fullText, targetText: targetText, hittableLink: hittableLink,
+                                    namedChildFrame: namedFrame) {
+        case .link:
             link.tap()
             return
+        case .namedChild:
+            named?.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            return
+        case .notFound:
+            throw ActionError.actionFailed(action: "tap", reason: "Text '\(targetText)' not found in element label '\(fullText)'")
+        case .proportional:
+            break
         }
-
         guard let range = fullText.range(of: targetText) else {
             throw ActionError.actionFailed(action: "tap", reason: "Text '\(targetText)' not found in element label '\(fullText)'")
         }

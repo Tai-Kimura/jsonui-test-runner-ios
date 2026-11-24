@@ -180,3 +180,32 @@ public enum VisibleFrame {
         hasArea(shownPart(of: frame, clips: clips))
     }
 }
+
+/// Where `tap {id, text}` presses, decided from what XCTest reports. Pure, so it is unit-tested.
+///
+/// - `link`: SwiftUI's own element for an AttributedString link range (a partialAttributes onClick range) with
+///   that label, hittable — its frame is the real glyph rect.
+/// - `namedChild`: a descendant whose label is exactly the text and that has an area, hittable or not. A library's
+///   inner part can carry the words on a child that takes no press while the press is on a parent with no name or
+///   identifier (the shape measured on Android: material3 DatePicker's month-and-year header); its centre is where
+///   a finger presses. Before, only the element's own label was read, and the step failed with "not found in
+///   element label" (ticket 2026-11-24-conformance-android-tap-untagged-material-child-and-pinned-locale).
+/// - `proportional`: the text is a part of the element's own label; the press is at its share of the width.
+/// - `notFound`: none of these.
+public enum TextTapRoute: Equatable {
+    case link
+    case namedChild
+    case proportional
+    case notFound
+}
+
+public enum TextTapRouting {
+    public static func route(
+        fullText: String, targetText: String, hittableLink: Bool, namedChildFrame: CGRect?
+    ) -> TextTapRoute {
+        if hittableLink { return .link }
+        if let frame = namedChildFrame, VisibleFrame.hasArea(frame) { return .namedChild }
+        if !targetText.isEmpty, fullText.range(of: targetText) != nil { return .proportional }
+        return .notFound
+    }
+}
